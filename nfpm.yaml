@@ -1,0 +1,28 @@
+name: pan
+arch: amd64
+platform: linux
+version: 0.0.0
+section: utils
+priority: extra
+maintainer: Pan Team
+description: "Pan — the monorepo shepherd. From panic to push: fix, harmonize, and deliver."
+license: MIT
+homepage: https://github.com/pan-cli/pan
+depends:
+  - nodejs
+contents:
+  - src: ./bin/pan
+    dst: /usr/local/bin/pan
+  - src: ./dist
+    dst: /usr/local/lib/pan/dist
+  - src: ./LICENSE
+    dst: /usr/local/share/doc/pan/LICENSE
+  - src: ./README.md
+    dst: /usr/local/share/doc/pan/README.md
+overrides:
+  deb:
+    depends:
+      - nodejs (>= 16)
+  rpm:
+    depends:
+      - nodejs

@@ -1,0 +1,191 @@
+# 🐐 Pan — the monorepo shepherd (son of Hermes)
+
+**Pan** is an opinionated, interactive CLI that:
+
+- refuses pushing main/master
+- enforces branch naming: `${USER}/{feat,fix}/${MESSAGE}`
+- always rebases from origin/master (fallback origin/main) before push
+- builds only the Yarn workspaces that changed and runs the relevant test suites
+- auto-remediates build failures (cache clean, migrations, Prisma, Docker, user scripts)
+- adds/commits/pushes only when the index is clean and logs every step verbosely
+- stashes dirty worktrees before rebasing and restores them safely afterwards
+
+## 🏛️ Why “Pan”?
+
+In Greek mythology, **Pan** is the **son of Hermes** (messenger god). Pan is a **shepherd** who brings order to scattered flocks and a musician who creates **harmony** from many pipes. Your monorepo is a wild landscape; Pan guides it from **panic** to push—shepherding packages, harmonizing builds and checks, and safely delivering (pushing) changes.
+
+## 🧰 Installation
+
+### 🛠️ Summary
+
+| Platform | Install Command |
+|-----------|-----------------|
+| Local clone | `npm install && npm run build && npm link` |
+| macOS | `brew tap pan-cli/pan && brew install pan` |
+| Debian / Ubuntu | `sudo apt install ./pan_*.deb` |
+| Fedora / RHEL | `sudo rpm -i pan-*.rpm` |
+| Windows | `npm install && npm run build && npm link` |
+
+### 1. Install (from source)
+
+```sh
+npm i -g pan
+```
+
+### 2. Local installation (development or direct clone)
+
+If you cloned this repo directly and want to run **Pan** locally:
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Build the TypeScript source
+npm run build
+
+# 3. Link Pan globally so you can call `pan` anywhere
+npm link
+```
+
+You can now run Pan globally:
+
+```bash
+pan --version
+pan diagnose
+pan push
+```
+
+To undo the global link later:
+
+```bash
+npm unlink -g pan
+```
+
+Or run it without linking:
+
+```bash
+# run directly from source
+npx tsx src/cli.ts push
+# or use the built binary
+./bin/pan diagnose
+```
+
+---
+
+### 🍎 3. macOS (Homebrew Tap)
+
+Homebrew tap is live:
+
+```bash
+brew tap pan-cli/pan
+brew install pan
+```
+
+To upgrade later:
+
+```bash
+brew update
+brew upgrade pan
+```
+
+---
+
+### 🐧 4. Linux (APT or YUM / DNF)
+
+.deb and .rpm packages are available via GitHub Releases, you can install Pan using your system package manager.
+
+#### Debian / Ubuntu (.deb)
+
+```bash
+wget https://github.com/pan-cli/pan/releases/latest/download/pan_0.1.0_amd64.deb
+sudo apt install ./pan_0.1.0_amd64.deb
+```
+
+#### Fedora / RHEL / Amazon Linux (.rpm)
+
+```bash
+wget https://github.com/pan-cli/pan/releases/latest/download/pan-0.1.0.x86_64.rpm
+sudo rpm -i pan-0.1.0.x86_64.rpm
+```
+
+#### Verify
+
+```bash
+pan --version
+pan diagnose
+```
+
+---
+
+### 🤕 5. Windows
+
+Windows users can clone and run using Node.js:
+
+```powershell
+git clone https://github.com/pan-cli/pan.git
+cd pan
+npm install
+npm run build
+npm link
+pan diagnose
+```
+
+---
+
+## 🚀 Usage
+
+```sh
+pan push       # full policy flow: branch → rebase → fix → checks → commit → push
+pan diagnose   # quick checks (build/typecheck/lint) with a summarized failure report
+pan fix        # smart remediation for build
+pan prepush    # lint --fix, type-check, targeted tests, dirty-index-check
+pan chat       # contextual LLM session; Pan runs suggested commands with you in loop
+pan help       # detailed usage guide and environment knobs
+```
+
+Set the environment variable `PAN_DOCKER_DEV_CMD` to a custom remediation command if your monorepo relies on starting local Docker services during the build (optional).
+
+Pan inspects `yarn workspaces list`, `git status`, and package.json scripts to determine which builds/tests to run. When a build fails, Pan tries the best repair scripts it can find (e.g., `yarn cache clean`, `npx prisma generate`, workspace `migrate`/`fix:*` scripts) before retrying targeted builds.
+
+## 🧠 Optional AI Integration
+
+Set the environment variable `LLM_COMMAND` to any shell command that reads a prompt from STDIN and prints a text suggestion.  
+Examples:
+
+```bash
+export LLM_COMMAND="ollama run llama3"
+# or
+export LLM_COMMAND="lmstudio generate --model 'MyLocalModel'"
+```
+
+### 🆘 ChatGPT Escalation (last resort)
+
+When every automated remediation fails, Pan opens a terminal chat with ChatGPT (`gpt-5-codex`), automatically runs any commands it suggests, and reports the outcome back into the same conversation. You can jump in at any point to add clarifications or stop the loop.
+
+- `PAN_CHATGPT_ENABLED` (default: `1`): set to `0` to disable the escalation entirely.
+- `PAN_OPENAI_API_KEY` / `OPENAI_API_KEY`: supply your ChatGPT account key so the session uses your history and permissions.
+- `PAN_CHATGPT_CONFIRM` (default: `1`): set to `0` to skip the initial confirmation prompt.
+- `PAN_CHATGPT_MODEL` (default: `gpt-5-codex`): override the model if you prefer a different variant.
+- `PAN_CHATGPT_BASE_URL` (default: `https://api.openai.com/v1`): point to a proxy or Azure OpenAI endpoint.
+- `PAN_CHATGPT_TIMEOUT_MS`, `PAN_CHATGPT_MAX_TOKENS`, and `PAN_CHATGPT_MAX_ROUNDS` control request/runtime limits.
+- `PAN_ASSISTANT_MODE` can be set to `openai` (default) or `local` to use a shell-accessible LLM command instead of ChatGPT; configure `PAN_LOCAL_LLM_COMMAND`, `PAN_LLM_COMMAND`, or `LLM_COMMAND` (e.g., `ollama run llama3`).
+
+Pan prints the shared log paths and echoes the chat transcript (`[pan]`, `[chatgpt]`, `[you]`) so you can monitor or intervene before the next command runs.
+
+Example (local LLM via Ollama):
+
+```bash
+export PAN_ASSISTANT_MODE=local
+export PAN_LOCAL_LLM_COMMAND="ollama run llama3"
+pan chat
+```
+
+If you leave the command blank when prompted, Pan can bootstrap a Docker-based setup automatically (defaults to the `ollama/ollama:latest` image, container name `pan-llama3`, and model `llama3`). Ensure Docker is running and you have permission to pull images before selecting the auto-setup option.
+
+> Note: When using ChatGPT, Pan relies on OpenAI's authenticated API. There is currently no supported browser-login handoff or device-auth flow for external CLIs, so an API key (or compatible proxy token) is required unless you switch to `PAN_ASSISTANT_MODE=local` with a shell-accessible LLM command.
+
+---
+
+## 🤝 Contributing
+
+PRs welcome — help Pan shepherd more monorepos from chaos to calm 🐐.
