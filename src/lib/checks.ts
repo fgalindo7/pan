@@ -37,6 +37,10 @@ async function gatherTestCommands(targets: WorkspaceInfo[]) {
   for (const ws of targets) {
     const script = selectTestScript(ws);
     if (!script) continue;
+    if (isPlaceholderTestScript(ws, script)) {
+      console.log(`[pan] Skipping ${ws.isRoot ? "root" : ws.name} ${script} (placeholder test script).`);
+      continue;
+    }
     const cmd = workspaceScriptCommand(ws, script);
     if (seen.has(cmd)) continue;
     seen.add(cmd);
@@ -67,4 +71,11 @@ function selectTestScript(ws: WorkspaceInfo) {
   }
   const fallback = Object.keys(ws.scripts || {}).find(s => /(test|jest|vitest|cypress)/i.test(s));
   return fallback || null;
+}
+
+function isPlaceholderTestScript(ws: WorkspaceInfo, script: string) {
+  const body = ws.scripts?.[script];
+  if (!body) return false;
+  const normalized = body.replace(/\s+/g, " ").toLowerCase();
+  return normalized.includes("no test specified") && normalized.includes("exit 1");
 }

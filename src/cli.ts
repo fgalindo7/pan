@@ -30,6 +30,15 @@ program.command("diagnose")
     const runner = detectRunner(pkg);
     const scripts = pkg.scripts || {};
 
+    const { smartBuildFix } = await import("./lib/fix.js");
+    console.log("[pan] Running smart remediation before diagnostics...");
+    const fixResult = await smartBuildFix({ skipConsult: true, interactive: false, label: "diagnose" });
+    console.log(`[pan] Smart remediation summary: ${fixResult.summary}`);
+    if (fixResult.steps.length) {
+      console.log(`[pan] Remediation steps: ${fixResult.steps.join(" → ")}`);
+    }
+    let exitCode = fixResult.ok ? 0 : 1;
+
     const diagnoseConfigs: Array<{ name: string; description: string; candidates: string[] }> = [
       { name: "type-check", description: "type-check", candidates: ["type-check", "typecheck", "check", "tsc"] },
       { name: "lint", description: "lint", candidates: ["lint", "lint:ci", "lint:fix", "eslint"] },
@@ -57,6 +66,7 @@ program.command("diagnose")
 
     if (results.length === 0) {
       console.log("[pan] No diagnose scripts found. Define package scripts (e.g., type-check, lint, build) to enable diagnostics.");
+      process.exitCode = exitCode;
       return;
     }
 
@@ -65,6 +75,7 @@ program.command("diagnose")
 
     if (!failures.length) {
       console.log("[pan] All diagnose checks passed. No further action required.");
+      process.exitCode = exitCode;
       return;
     }
 
@@ -82,6 +93,7 @@ program.command("diagnose")
 
     const chatSummaryLines = [
       "pan diagnose summary:",
+      `Smart remediation: ${fixResult.summary}`,
       summary,
       "",
       "Failures:",
@@ -96,16 +108,25 @@ program.command("diagnose")
       question: "What additional remediation steps should Pan attempt to resolve the failing checks?",
       logs: failures.map((f) => logContextFromFile(f.label, f.result.logFile)),
     });
-
-    process.exitCode = 1;
+    exitCode = 1;
+    process.exitCode = exitCode;
   });
 
 program.command("fix")
   .description("Smart remediation for build failures")
   .action(async () => {
     const { smartBuildFix } = await import("./lib/fix.js");
-    const ok = await smartBuildFix();
-    console.log(ok ? "✅ Build fixed" : "⚠️ Build still failing (see .repo-doctor logs).");
+    const result = await smartBuildFix();
+    console.log(`[pan] ${result.summary}`);
+    if (result.ok) {
+      console.log("✅ Build fixed");
+    } else {
+      if (result.blockedMessage) {
+        console.log(`[pan] ${result.blockedMessage}`);
+      }
+      console.log("⚠️ Build still failing (see .repo-doctor logs).");
+      process.exitCode = 1;
+    }
   });
 
 program.command("prepush")
@@ -173,13 +194,20 @@ program.command("chat")
       : "none";
 
     console.log("[pan] Gathering build state...");
-    const runBuild = await promptYesNo("[pan] Run `yarn build` now to capture current status? [Y/n] ", true);
     const logs = [];
-    let buildStatus = "skipped";
-    if (runBuild) {
-      const buildResult = await run("yarn build", "chat build snapshot");
-      buildStatus = buildResult.ok ? "yarn build succeeded" : `yarn build failed (exit ${buildResult.code ?? "unknown"})`;
-      if (buildResult.logFile) logs.push(logContextFromFile("yarn build", buildResult.logFile));
+    const hasChanges = changedFilesList.length > 0;
+    const hasNodeModules = fs.existsSync("node_modules");
+    const shouldOfferBuild = hasChanges || !hasNodeModules;
+    let buildStatus = shouldOfferBuild ? "skipped" : "skipped (clean tree)";
+    if (shouldOfferBuild) {
+      const runBuild = await promptYesNo("[pan] Run `yarn build` now to capture current status? [Y/n] ", true);
+      if (runBuild) {
+        const buildResult = await run("yarn build", "chat build snapshot");
+        buildStatus = buildResult.ok ? "yarn build succeeded" : `yarn build failed (exit ${buildResult.code ?? "unknown"})`;
+        if (buildResult.logFile) logs.push(logContextFromFile("yarn build", buildResult.logFile));
+      }
+    } else {
+      console.log("[pan] Build snapshot skipped (clean worktree with dependencies present).");
     }
 
     const gitStatus = await run("git status --short", "chat git status", { silence: true });
@@ -358,7 +386,7 @@ async function ensureDockerLlama3Setup() {
   const image = process.env.PAN_LLAMA_DOCKER_IMAGE || "ollama/ollama:latest";
   const container = process.env.PAN_LLAMA_DOCKER_CONTAINER || "pan-llama3";
   const model = process.env.PAN_LLAMA_MODEL || "llama3";
-  const command = `docker exec ${container} ollama run ${model}`;
+  const command = `docker exec -i ${container} ollama run ${model}`;
 
   console.log(`[pan] Setting up Docker-based ${model} using image ${image} (container ${container}).`);
   const pull = await run(`docker pull ${image}`, `docker pull ${image}`);
@@ -384,7 +412,7 @@ async function ensureDockerLlama3Setup() {
 
   await new Promise(resolve => setTimeout(resolve, 3000));
 
-  const pullModel = await run(`docker exec ${container} ollama pull ${model}`, `docker exec ${container} ollama pull ${model}`);
+  const pullModel = await run(`docker exec -i ${container} ollama pull ${model}`, `docker exec ${container} ollama pull ${model}`);
   if (!pullModel.ok) {
     console.log("[pan] Failed to pull llama3 model inside the container.");
     return false;

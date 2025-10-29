@@ -1,3 +1,5 @@
+import readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
 import { run } from "./run.js";
 import { consultChatGPT, logContextFromFile } from "./chatgpt.js";
 import { changedWorkspaces, findScriptsByKeywords, hasScript, listWorkspaces, workspaceScriptCommand, WorkspaceInfo } from "./workspaces.js";
@@ -5,6 +7,7 @@ import { changedWorkspaces, findScriptsByKeywords, hasScript, listWorkspaces, wo
 const dockerRemediationCmd = process.env.PAN_DOCKER_DEV_CMD?.trim();
 const buildScriptPreference = ["build:ci", "build", "compile", "prepare"];
 const remediationKeywordDefaults = ["fix", "clean", "prepare", "postinstall"];
+const FFYC_COMMAND = "find packages -name \"build\" -type d -exec rm -rf {} + 2>/dev/null && find packages -name \"tsconfig.tsbuildinfo\" -type f -delete && find . -name \"node_modules\" -type d -exec rm -rf {} + 2>/dev/null";
 
 type RunResult = Awaited<ReturnType<typeof run>>;
 
@@ -13,42 +16,233 @@ interface BuildFailure {
   result: RunResult;
 }
 
-export async function smartBuildFix(): Promise<boolean> {
+interface SmartFixOptions {
+  skipConsult?: boolean;
+  interactive?: boolean;
+  label?: string;
+}
+
+export interface SmartBuildFixResult {
+  ok: boolean;
+  summary: string;
+  steps: string[];
+  failures: BuildFailure[];
+  attempts: number;
+  blockedMessage?: string;
+  consulted: boolean;
+}
+
+export async function smartBuildFix(options: SmartFixOptions = {}): Promise<SmartBuildFixResult> {
+  const { skipConsult = false, interactive = true } = options;
+  const steps: string[] = [];
+  let consulted = false;
+  let totalRuns = 0;
+
   const allWorkspaces = await listWorkspaces();
   const targets = await changedWorkspaces();
+  const rootWorkspace = allWorkspaces.find(ws => ws.isRoot) || null;
+
+  const priority = await attemptPriorityRemediation(rootWorkspace);
+  if (priority.status === "ok") {
+    steps.push("Priority remediation (git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc) completed successfully.");
+    return {
+      ok: true,
+      summary: "Priority remediation finished cleanly; no further build work was required.",
+      steps,
+      failures: [],
+      attempts: totalRuns,
+      consulted,
+    };
+  }
+
+  if (priority.status === "blocked") {
+    const summary = priority.message;
+    steps.push(`Priority remediation blocked: ${priority.message}`);
+    return {
+      ok: false,
+      summary,
+      steps,
+      failures: [],
+      attempts: totalRuns,
+      blockedMessage: priority.message,
+      consulted,
+    };
+  }
+  const continuationReason = priority.reason;
+  steps.push(continuationReason
+    ? `Priority remediation could not complete (${continuationReason}); continuing with targeted builds.`
+    : "Priority remediation completed; continuing with targeted builds.");
+
   const first = await runBuildSequence(targets);
-  if (first.ok) return true;
+  totalRuns += first.ran;
+  steps.push(describeRun("Initial build pass", first, targets));
+  if (first.ok) {
+    const summary = buildSuccessSummary("Initial build pass", targets, totalRuns);
+    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+  }
 
   const combinedLog = failureBlob(first.failures);
   await runRemediations(combinedLog, { targets, allWorkspaces, failures: first.failures });
+  steps.push("Executed remediation scripts based on failure output.");
 
   const second = await runBuildSequence(targets);
-  if (second.ok) return true;
+  totalRuns += second.ran;
+  steps.push(describeRun("Post-remediation build pass", second, targets));
+  if (second.ok) {
+    const summary = buildSuccessSummary("Post-remediation build pass", targets, totalRuns);
+    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+  }
 
   await run("yarn install", "yarn install");
+  steps.push("Ran yarn install to refresh dependencies.");
+
   const third = await runBuildSequence(targets);
-  if (third.ok) return true;
+  totalRuns += third.ran;
+  steps.push(describeRun("Post-install build pass", third, targets));
+  if (third.ok) {
+    const summary = buildSuccessSummary("Post-install build pass", targets, totalRuns);
+    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+  }
 
-  const latestFailures = third.failures.length ? third.failures : (second.failures.length ? second.failures : first.failures);
-  const workspaceList = targets.map(ws => ws.isRoot ? "root workspace" : ws.name).join(", ") || "root workspace";
-  const totalRuns = first.ran + second.ran + third.ran;
-  const failingTargets = latestFailures.map(f => f.workspace ? (f.workspace.isRoot ? "root workspace build" : `${f.workspace.name} build`) : "build").join(", ");
+  let postFfyc: Awaited<ReturnType<typeof runBuildSequence>> | null = null;
+  if (interactive) {
+    const shouldRunFfyc = await confirmFfyc();
+    if (shouldRunFfyc) {
+      const ffycResult = await run(FFYC_COMMAND, "ffyc deep clean");
+      if (ffycResult.ok) {
+        steps.push("Ran ffyc deep clean.");
+        postFfyc = await runBuildSequence(targets);
+        totalRuns += postFfyc.ran;
+        steps.push(describeRun("Post-ffyc build pass", postFfyc, targets));
+        if (postFfyc.ok) {
+          const summary = buildSuccessSummary("Post-ffyc build pass", targets, totalRuns);
+          return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+        }
+      } else {
+        steps.push("ffyc deep clean failed; continuing without it.");
+      }
+    } else {
+      steps.push("Skipped ffyc deep clean (user declined).");
+    }
+  } else {
+    steps.push("Skipped ffyc deep clean (non-interactive mode).");
+  }
+
+  const latestRun = postFfyc ?? third;
+  const latestFailures = latestRun.failures.length
+    ? latestRun.failures
+    : (second.failures.length ? second.failures : first.failures);
+
+  const workspaceList = formatWorkspaceList(targets);
+  const failureNames = latestFailures.map(failureLabel).join(", ") || workspaceList;
   const summary = [
-    `Pan smartBuildFix attempted ${totalRuns} build run(s) targeting ${workspaceList}.`,
-    "Automated remediations (prisma generate, cache clean, migrate/fix scripts, Docker recovery, yarn install) were executed, but the build still fails.",
-    failingTargets ? `Latest failing targets: ${failingTargets}.` : "",
-  ].filter(Boolean).join(" ");
+    `Build remains failing after ${totalRuns} targeted attempt${totalRuns === 1 ? "" : "s"} covering ${workspaceList}.`,
+    `Latest failing targets: ${failureNames}.`,
+    "Check the .repo-doctor logs above for details.",
+  ].join(" ");
 
-  await consultChatGPT({
+  if (!skipConsult) {
+    await consultChatGPT({
+      summary,
+      question: "What additional build or remediation commands should Pan try next to restore a passing build?",
+      logs: latestFailures.map(f => {
+        const label = failureLabel(f);
+        return logContextFromFile(label, f.result.logFile);
+      }),
+    });
+    consulted = true;
+  }
+
+  return {
+    ok: false,
     summary,
-    question: "What additional build or remediation commands should Pan try next to restore a passing build?",
-    logs: latestFailures.map(f => {
-      const label = f.workspace ? (f.workspace.isRoot ? "root workspace build" : `${f.workspace.name} build`) : "build";
-      return logContextFromFile(label, f.result.logFile);
-    }),
-  });
+    steps,
+    failures: latestFailures,
+    attempts: totalRuns,
+    consulted,
+  };
+}
 
-  return false;
+type PriorityOutcome =
+  | { status: "ok" }
+  | { status: "continue"; reason?: string }
+  | { status: "blocked"; message: string };
+
+async function attemptPriorityRemediation(root: WorkspaceInfo | null): Promise<PriorityOutcome> {
+  console.log("[pan] Priority remediation: git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc");
+
+  const fetchRes = await run("git fetch --prune", "git fetch origin");
+  if (!fetchRes.ok) {
+    console.log("[pan] Priority remediation: git fetch failed, continuing with standard flow.");
+    return { status: "continue", reason: "git fetch origin" };
+  }
+
+  const rebaseRes = await run("git rebase --autostash origin/master", "git rebase origin/master");
+  if (!rebaseRes.ok) {
+    console.log("[pan] Priority remediation: git rebase origin/master failed — manual resolution required.");
+    return { status: "blocked", message: "git rebase origin/master failed. Resolve conflicts then rerun Pan." };
+  }
+
+  const steps = priorityCommandSteps(root);
+  for (const step of steps) {
+    const res = await run(step.cmd, step.label);
+    if (!res.ok) {
+      console.log(`[pan] Priority remediation: ${step.label} failed, falling back to standard remediation.`);
+      return { status: "continue", reason: step.label };
+    }
+  }
+
+  return { status: "ok" };
+}
+
+function priorityCommandSteps(root: WorkspaceInfo | null) {
+  const steps: Array<{ cmd: string; label: string }> = [
+    { cmd: "yarn cache clean", label: "yarn cache clean" },
+    { cmd: "yarn install", label: "yarn install" },
+  ];
+
+  const buildCmd = scriptCommand(root, "build") || "yarn run build";
+  steps.push({ cmd: buildCmd, label: "yarn build" });
+
+  const lintCmd = scriptCommand(root, "lint");
+  if (lintCmd) {
+    steps.push({ cmd: lintCmd, label: "yarn lint" });
+  } else {
+    console.log("[pan] Priority remediation: skipping yarn lint (script not found).");
+  }
+
+  const typeCheckCmd = scriptCommand(root, "type-check") || scriptCommand(root, "typecheck");
+  if (typeCheckCmd) {
+    steps.push({ cmd: typeCheckCmd, label: "yarn type-check" });
+  } else {
+    console.log("[pan] Priority remediation: skipping yarn type-check (script not found).");
+  }
+
+  return steps;
+}
+
+function scriptCommand(root: WorkspaceInfo | null, script: string) {
+  if (!root) return "";
+  if (!hasScript(root, script)) return "";
+  return workspaceScriptCommand(root, script);
+}
+
+async function confirmFfyc() {
+  console.log("[pan] Priority remediation exhausted. Before contacting an assistant, you can run ffyc (deep clean).");
+  return promptYesNo("[pan] Run ffyc deep clean now? [y/N] ", false);
+}
+
+async function promptYesNo(question: string, defaultYes = false) {
+  const rl = readline.createInterface({ input, output });
+  try {
+    const response = (await rl.question(question)).trim().toLowerCase();
+    if (!response) return defaultYes;
+    if (["y", "yes"].includes(response)) return true;
+    if (["n", "no"].includes(response)) return false;
+    return defaultYes;
+  } finally {
+    rl.close();
+  }
 }
 
 async function runBuildSequence(targets: WorkspaceInfo[]): Promise<{ ok: boolean; failures: BuildFailure[]; ran: number }> {
@@ -128,6 +322,36 @@ function selectBuildScript(ws: WorkspaceInfo) {
 
 function failureBlob(failures: BuildFailure[]) {
   return failures.map(f => `${f.result.stdout}\n${f.result.stderr}`).join("\n");
+}
+
+function describeRun(label: string, result: { ok: boolean; failures: BuildFailure[] }, targets: WorkspaceInfo[]) {
+  if (result.ok) {
+    return `${label} succeeded for ${formatWorkspaceList(targets)}.`;
+  }
+  const failures = result.failures.map(failureLabel).join(", ") || formatWorkspaceList(targets);
+  return `${label} failed for ${failures}.`;
+}
+
+function buildSuccessSummary(phase: string, targets: WorkspaceInfo[], runCount: number) {
+  const workspaceList = formatWorkspaceList(targets);
+  return `${phase} succeeded after ${runCount} targeted run${runCount === 1 ? "" : "s"} covering ${workspaceList}.`;
+}
+
+function formatWorkspaceList(targets: WorkspaceInfo[]) {
+  const names = targets.length ? targets.map(ws => ws.isRoot ? "root workspace" : ws.name) : ["root workspace"];
+  return humanJoin(Array.from(new Set(names)));
+}
+
+function failureLabel(failure: BuildFailure) {
+  if (!failure.workspace) return "build";
+  return failure.workspace.isRoot ? "root workspace build" : `${failure.workspace.name} build`;
+}
+
+function humanJoin(items: string[]) {
+  if (!items.length) return "";
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
 function collectScripts(targets: WorkspaceInfo[], keywords: string[], all: WorkspaceInfo[]) {
