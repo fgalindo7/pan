@@ -64,8 +64,15 @@ export async function stageAll() {
   return runCommand("gaa");
 }
 
-export async function commit(msg: string) {
-  return runCommand("gcmsg", { message: msg, label: `git commit --message ${msg}` });
+export async function commit(msg: string, body?: string) {
+  const context: { message: string; label: string; body?: string } = {
+    message: msg,
+    label: `git commit --message ${msg}`,
+  };
+  if (body && body.trim().length) {
+    context.body = body;
+  }
+  return runCommand("gcmsg", context);
 }
 
 export async function pushSetUpstream(branch: string) {
