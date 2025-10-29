@@ -2,7 +2,7 @@ import { Command } from "commander";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import * as fs from "node:fs";
-import { run } from "./lib/run.js";
+import { run, summarizeSuccessfulCommands } from "./lib/run.js";
 import { pushFlow } from "./lib/push.js";
 import { consultChatGPT, logContextFromFile, resetChatGPTSession, getAssistantMode, requiresOpenAIKey, hasLocalAssistantCommand, localAssistantCommandLabel } from "./lib/chatgpt.js";
 import { listWorkspaces, changedWorkspaces, changedFiles } from "./lib/workspaces.js";
@@ -125,6 +125,13 @@ program.command("fix")
     console.log(`[pan] ${result.summary}`);
     if (result.ok) {
       console.log("✅ Build fixed");
+  const lines = summarizeSuccessfulCommands(result.commands);
+      if (lines.length) {
+        console.log("[pan] Commands executed to restore the build:");
+        for (const line of lines) {
+          console.log(`[pan]   - ${line}`);
+        }
+      }
     } else {
       if (result.blockedMessage) {
         console.log(`[pan] ${result.blockedMessage}`);

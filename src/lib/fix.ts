@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { run } from "./run.js";
+import { run, addCommandRecorder, type CommandRecord } from "./run.js";
 import { consultChatGPT, logContextFromFile } from "./chatgpt.js";
 import { changedWorkspaces, findScriptsByKeywords, hasScript, listWorkspaces, workspaceScriptCommand, WorkspaceInfo } from "./workspaces.js";
 
@@ -32,6 +32,7 @@ export interface SmartBuildFixResult {
   attempts: number;
   blockedMessage?: string;
   consulted: boolean;
+  commands: CommandRecord[];
 }
 
 export async function smartBuildFix(options: SmartFixOptions = {}): Promise<SmartBuildFixResult> {
@@ -39,37 +40,42 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
   const steps: string[] = [];
   let consulted = false;
   let totalRuns = 0;
+  const commands: CommandRecord[] = [];
+  const removeRecorder = addCommandRecorder(entry => commands.push(entry));
+  try {
 
   const allWorkspaces = await listWorkspaces();
   const targets = await changedWorkspaces();
   const rootWorkspace = allWorkspaces.find(ws => ws.isRoot) || null;
 
-  const priority = await attemptPriorityRemediation(rootWorkspace);
-  if (priority.status === "ok") {
-    steps.push("Priority remediation (git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc) completed successfully.");
-    return {
-      ok: true,
-      summary: "Priority remediation finished cleanly; no further build work was required.",
-      steps,
-      failures: [],
-      attempts: totalRuns,
-      consulted,
-    };
-  }
+    const priority = await attemptPriorityRemediation(rootWorkspace);
+    if (priority.status === "ok") {
+      steps.push("Priority remediation (git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc) completed successfully.");
+      return {
+        ok: true,
+        summary: "Priority remediation finished cleanly; no further build work was required.",
+        steps,
+        failures: [],
+        attempts: totalRuns,
+        consulted,
+        commands,
+      };
+    }
 
-  if (priority.status === "blocked") {
-    const summary = priority.message;
-    steps.push(`Priority remediation blocked: ${priority.message}`);
-    return {
-      ok: false,
-      summary,
-      steps,
-      failures: [],
-      attempts: totalRuns,
-      blockedMessage: priority.message,
-      consulted,
-    };
-  }
+    if (priority.status === "blocked") {
+      const summary = priority.message;
+      steps.push(`Priority remediation blocked: ${priority.message}`);
+      return {
+        ok: false,
+        summary,
+        steps,
+        failures: [],
+        attempts: totalRuns,
+        blockedMessage: priority.message,
+        consulted,
+        commands,
+      };
+    }
   const continuationReason = priority.reason;
   steps.push(continuationReason
     ? `Priority remediation could not complete (${continuationReason}); continuing with targeted builds.`
@@ -80,7 +86,7 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
   steps.push(describeRun("Initial build pass", first, targets));
   if (first.ok) {
     const summary = buildSuccessSummary("Initial build pass", targets, totalRuns);
-    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
   }
 
   const combinedLog = failureBlob(first.failures);
@@ -92,7 +98,7 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
   steps.push(describeRun("Post-remediation build pass", second, targets));
   if (second.ok) {
     const summary = buildSuccessSummary("Post-remediation build pass", targets, totalRuns);
-    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
   }
 
   await run("yarn install", "yarn install");
@@ -103,7 +109,7 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
   steps.push(describeRun("Post-install build pass", third, targets));
   if (third.ok) {
     const summary = buildSuccessSummary("Post-install build pass", targets, totalRuns);
-    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
   }
 
   let postFfyc: Awaited<ReturnType<typeof runBuildSequence>> | null = null;
@@ -118,7 +124,7 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
         steps.push(describeRun("Post-ffyc build pass", postFfyc, targets));
         if (postFfyc.ok) {
           const summary = buildSuccessSummary("Post-ffyc build pass", targets, totalRuns);
-          return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted };
+          return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
         }
       } else {
         steps.push("ffyc deep clean failed; continuing without it.");
@@ -162,7 +168,11 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
     failures: latestFailures,
     attempts: totalRuns,
     consulted,
+    commands,
   };
+  } finally {
+    removeRecorder();
+  }
 }
 
 type PriorityOutcome =

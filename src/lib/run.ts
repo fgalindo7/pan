@@ -9,6 +9,51 @@ export const execp = promisify(_exec);
  */
 const LOG_DIR = ".repo-doctor";
 
+export interface CommandRecord {
+  command: string;
+  label: string;
+  ok: boolean;
+  exitCode: number;
+  durationMs: number;
+  timestamp: number;
+}
+
+type Recorder = (entry: CommandRecord) => void;
+
+const commandRecorders: Recorder[] = [];
+
+export function addCommandRecorder(recorder: Recorder) {
+  commandRecorders.push(recorder);
+  return () => {
+    const idx = commandRecorders.indexOf(recorder);
+    if (idx !== -1) commandRecorders.splice(idx, 1);
+  };
+}
+
+function notifyRecorders(entry: CommandRecord) {
+  for (const recorder of commandRecorders) {
+    try {
+      recorder(entry);
+    } catch {
+      // ignore recorder errors
+    }
+  }
+}
+
+export function summarizeSuccessfulCommands(commands: CommandRecord[]) {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const entry of commands) {
+    if (!entry.ok) continue;
+    const descriptor = entry.label === entry.command ? entry.label : `${entry.label} (${entry.command})`;
+    const key = `${entry.label}|${entry.command}|${entry.ok}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(descriptor);
+  }
+  return lines;
+}
+
 interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -28,6 +73,7 @@ export async function run(cmd: string, name = cmd, options: RunOptions = {}) {
     const ms = Date.now() - start;
     if (!options.silence) console.log(`[pan] ✅ ${name} (${ms}ms)`);
     const logFile = log(name, 0, stdout, stderr, ms);
+    notifyRecorders({ command: cmd, label: name, ok: true, exitCode: 0, durationMs: ms, timestamp: Date.now() });
     return { ok: true, stdout: stdout.trim(), stderr: stderr.trim(), logFile } as const;
   } catch (e: any) {
     const out = e?.stdout?.toString?.() ?? "";
@@ -35,6 +81,7 @@ export async function run(cmd: string, name = cmd, options: RunOptions = {}) {
     const ms = Date.now() - start;
     if (!options.silence) console.log(`[pan] ❌ ${name} (${ms}ms)`);
     const logFile = log(name, e?.code ?? 1, out, err, ms);
+    notifyRecorders({ command: cmd, label: name, ok: false, exitCode: e?.code ?? 1, durationMs: ms, timestamp: Date.now() });
     return { ok: false, stdout: out, stderr: err, code: e?.code ?? 1, logFile } as const;
   }
 }

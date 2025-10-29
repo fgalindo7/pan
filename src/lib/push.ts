@@ -1,6 +1,6 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { run } from "./run.js";
+import { run, addCommandRecorder, summarizeSuccessfulCommands, type CommandRecord } from "./run.js";
 import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit, pushSetUpstream } from "./git.js";
 import { userName, validFeatureBranch, sanitizeSegment, ALLOWED_PREFIX } from "./policy.js";
 import { smartBuildFix } from "./fix.js";
@@ -8,6 +8,10 @@ import { runPrepushChecks, dirtyIndexCheck, typeCheck, lintFix } from "./checks.
 
 export async function pushFlow() {
   console.log("[pan] starting push flow");
+  const commandLog: CommandRecord[] = [];
+  const removeRecorder = addCommandRecorder(entry => commandLog.push(entry));
+  let pushSucceeded = false;
+  try {
   const br = await currentBranch();
   const user = userName();
 
@@ -94,7 +98,21 @@ export async function pushFlow() {
   const p = await pushSetUpstream(featureBranch);
   if (!p.ok) throw new Error("Push failed.");
 
+  pushSucceeded = true;
   console.log(`✅ Pushed ${featureBranch}`);
+  const lines = summarizeSuccessfulCommands(commandLog);
+  if (lines.length) {
+    console.log("[pan] Commands executed to prepare the push:");
+    for (const line of lines) {
+      console.log(`[pan]   - ${line}`);
+    }
+  }
+  } finally {
+    removeRecorder();
+    if (!pushSucceeded) {
+      commandLog.length = 0;
+    }
+  }
 }
 
 async function stashIfNeeded(): Promise<{ ref: string | null } | null> {
