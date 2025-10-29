@@ -1,11 +1,13 @@
 # Pan Agent Guide
 
 ## Purpose
+
 - Shepherd Yarn or npm monorepos through a safe `push` flow.
 - Automate build remediation, linting, type-checking, and git hygiene before changes reach the remote.
 - Provide optional hooks for local LLMs to help diagnose failures.
 
 ## Core Commands
+
 - `pan diagnose`: Run `yarn type-check`, `yarn lint -s`, and `yarn build -s` to surface issues quickly.
 - `pan fix`: Attempt a smart build repair (targeted workspace builds, Prisma generate, cache cleanup, optional Docker remediation, fix scripts).
 - `pan prepush`: Execute lint fix, type-check, relevant workspace tests, and dirty index validation.
@@ -14,6 +16,7 @@
 - `pan help`: Print the full usage guide, environment variables, and workflow expectations.
 
 ## Workflow Expectations
+
 1. Repository uses Git with an `origin` remote and Yarn workspaces (or compatible scripts).
 2. Pan inspects `git status` and `yarn workspaces list` to build/test only workspaces touched by current changes.
 3. Default branch is `main` or `master`; feature branches follow `<user>/<feat|fix>/<message>`.
@@ -21,6 +24,7 @@
 5. Logs for each step are written to `.repo-doctor/` for post-run inspection and echoed in real time.
 
 ## Environment Variables
+
 - `LLM_COMMAND`: Shell command invoked with stdin prompt to obtain AI suggestions (e.g., `ollama run llama3`). Leave unset to skip AI integration.
 - `PAN_DOCKER_DEV_CMD`: Optional command executed when build logs mention Docker connectivity problems (e.g., `yarn workspace services docker:dev`).
 - `PAN_CHATGPT_ENABLED` (default 1): Set to `0` to prevent Pan from offering ChatGPT escalation.
@@ -31,12 +35,14 @@
 - `PAN_LLAMA_DOCKER_IMAGE`, `PAN_LLAMA_DOCKER_CONTAINER`, `PAN_LLAMA_MODEL`: Override the defaults (`ollama/ollama:latest`, `pan-llama3`, `llama3`) used when Pan auto-installs the local Docker LLM.
 
 ## Guardrails
+
 - Refuses to push directly to `main`/`master`.
 - Automatically stashes (with a Pan-labelled message) and reapplies dirty state around rebases.
 - Stops the flow on failed rebases, lint/type-check/test violations, or dirty working tree after commit.
 - Expects `yarn type-check`, `yarn lint`, `yarn build`, and `yarn dirty-index-check` scripts to exist. Provide stubs or adjust scripts before using the CLI.
 
 ## Troubleshooting
+
 - Inspect `.repo-doctor/*.log` for verbose stdout/stderr of failing steps.
 - Re-run `pan fix` or `pan push` after manual remediation; CLI is idempotent except for git mutations already applied.
 - Configure `PAN_DOCKER_DEV_CMD` if your monorepo requires Docker services to be up for a successful build.

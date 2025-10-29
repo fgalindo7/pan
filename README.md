@@ -142,6 +142,8 @@ pan prepush    # lint --fix, type-check, targeted tests, dirty-index-check
 pan chat       # contextual LLM session; Pan runs suggested commands with you in loop
 pan toolkit    # show alias catalog and quick installers (init/install)
 pan help       # detailed usage guide and environment knobs
+
+Add `--verbose` to `diagnose`, `fix`, `prepush`, or `push` to stream command errors inline as they occur.
 ```
 
 Set the environment variable `PAN_DOCKER_DEV_CMD` to a custom remediation command if your monorepo relies on starting local Docker services during the build (optional).
@@ -169,9 +171,9 @@ export LLM_COMMAND="ollama run llama3"
 export LLM_COMMAND="lmstudio generate --model 'MyLocalModel'"
 ```
 
-### 🆘 ChatGPT Escalation (last resort)
+### 🆘 LLM Escalation (last resort)
 
-When every automated remediation fails, Pan opens a terminal chat with ChatGPT (`gpt-5-codex`), automatically runs any commands it suggests, and reports the outcome back into the same conversation. You can jump in at any point to add clarifications or stop the loop.
+When every automated remediation fails, Pan opens a terminal chat with ChatGPT (`gpt-5-codex`) or a local LLM, automatically runs any commands it suggests, and reports the outcome back into the same conversation. You can jump in at any point to add clarifications or stop the loop.
 
 - `PAN_CHATGPT_ENABLED` (default: `1`): set to `0` to disable the escalation entirely.
 - `PAN_OPENAI_API_KEY` / `OPENAI_API_KEY`: supply your ChatGPT account key so the session uses your history and permissions.

@@ -8,6 +8,7 @@ import { pushFlow } from "./lib/push.js";
 import { consultChatGPT, logContextFromFile, resetChatGPTSession, getAssistantMode, requiresOpenAIKey, hasLocalAssistantCommand, localAssistantCommandLabel } from "./lib/chatgpt.js";
 import { listWorkspaces, changedWorkspaces, changedFiles } from "./lib/workspaces.js";
 import { currentBranch, worktreeClean } from "./lib/git.js";
+import { setVerboseLogging, clearLastCommandFailure, printLastFailureSummary } from "./lib/errors.js";
 
 const program = new Command();
 
@@ -45,7 +46,10 @@ program.command("help")
 
 program.command("diagnose")
   .description("Quick health check (build/typecheck/lint)")
-  .action(async () => {
+  .option("--verbose", "Print detailed errors as commands fail")
+  .action(async (options: { verbose?: boolean }) => {
+    setVerboseLogging(Boolean(options?.verbose));
+    clearLastCommandFailure();
     type RunResult = Awaited<ReturnType<typeof run>>;
     type StepResult = { name: string; label: string; result: RunResult };
 
@@ -64,6 +68,7 @@ program.command("diagnose")
     if (fixResult.blockedMessage) {
       console.log(`[pan] Smart remediation blocked: ${fixResult.blockedMessage}`);
       process.exitCode = 1;
+      printLastFailureSummary({ reason: "pan diagnose failed" });
       return;
     }
 
@@ -95,6 +100,9 @@ program.command("diagnose")
     if (results.length === 0) {
       console.log("[pan] No diagnose scripts found. Define package scripts (e.g., type-check, lint, build) to enable diagnostics.");
       process.exitCode = exitCode;
+      if (exitCode !== 0) {
+        printLastFailureSummary({ reason: "pan diagnose failed" });
+      }
       return;
     }
 
@@ -138,6 +146,7 @@ program.command("diagnose")
     });
     exitCode = 1;
     process.exitCode = exitCode;
+    printLastFailureSummary({ reason: "pan diagnose failed" });
   });
 
 const toolkit = program.command("toolkit")
@@ -218,13 +227,16 @@ toolkit.command("install")
 
 program.command("fix")
   .description("Smart remediation for build failures")
-  .action(async () => {
+  .option("--verbose", "Print detailed errors as commands fail")
+  .action(async (options: { verbose?: boolean }) => {
+    setVerboseLogging(Boolean(options?.verbose));
+    clearLastCommandFailure();
     const { smartBuildFix } = await import("./lib/fix.js");
     const result = await smartBuildFix();
     console.log(`[pan] ${result.summary}`);
     if (result.ok) {
       console.log("✅ Build fixed");
-  const lines = summarizeSuccessfulCommands(result.commands);
+      const lines = summarizeSuccessfulCommands(result.commands);
       if (lines.length) {
         console.log("[pan] Commands executed to restore the build:");
         for (const line of lines) {
@@ -237,21 +249,40 @@ program.command("fix")
       }
       console.log("⚠️ Build still failing (see .repo-doctor logs).");
       process.exitCode = 1;
+      printLastFailureSummary({ reason: "pan fix failed" });
     }
   });
 
 program.command("prepush")
   .description("Run lint --fix, type-check, dirty-index-check")
-  .action(async () => {
+  .option("--verbose", "Print detailed errors as commands fail")
+  .action(async (options: { verbose?: boolean }) => {
+    setVerboseLogging(Boolean(options?.verbose));
+    clearLastCommandFailure();
     const { runPrepushChecks } = await import("./lib/checks.js");
     const ok = await runPrepushChecks();
-    if (!ok) process.exitCode = 1; else console.log("✅ Ready to push!");
+    if (!ok) {
+      process.exitCode = 1;
+      printLastFailureSummary({ reason: "pan prepush failed" });
+    } else {
+      console.log("✅ Ready to push!");
+    }
   });
 
 program.command("push")
   .description("Full policy flow: branch -> rebase -> fix -> checks -> commit -> push")
-  .action(async () => {
-    try { await pushFlow(); } catch (e: any) { console.error("❌", e?.message || e); process.exit(1); }
+  .option("--verbose", "Print detailed errors as commands fail")
+  .action(async (options: { verbose?: boolean }) => {
+    setVerboseLogging(Boolean(options?.verbose));
+    clearLastCommandFailure();
+    try {
+      await pushFlow();
+    } catch (e: any) {
+      const message = typeof e?.message === "string" && e.message ? e.message : "pan push failed";
+      printLastFailureSummary({ reason: message });
+      console.error("❌", message);
+      process.exit(1);
+    }
   });
 
 program.command("chat")

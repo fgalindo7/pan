@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { resolveCommand, type CommandAlias, type CommandContext } from "./commands.js";
+import { recordCommandFailure } from "./errors.js";
 export const execp = promisify(_exec);
 
 /**
@@ -83,6 +84,14 @@ export async function run(cmd: string, name = cmd, options: RunOptions = {}) {
     if (!options.silence) console.log(`[pan] ❌ ${name} (${ms}ms)`);
     const logFile = log(name, e?.code ?? 1, out, err, ms);
     notifyRecorders({ command: cmd, label: name, ok: false, exitCode: e?.code ?? 1, durationMs: ms, timestamp: Date.now() });
+    recordCommandFailure({
+      command: cmd,
+      label: name,
+      stdout: out,
+      stderr: err,
+      logFile,
+      exitCode: e?.code ?? 1,
+    });
     return { ok: false, stdout: out, stderr: err, code: e?.code ?? 1, logFile } as const;
   }
 }
