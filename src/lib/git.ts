@@ -1,20 +1,20 @@
-import { run } from "./run.js";
+import { run, runCommand } from "./run.js";
 
 /**
  * Git helpers for Pan.
  */
 export async function currentBranch() {
-  const r = await run("git rev-parse --abbrev-ref HEAD", "git branch");
+  const r = await run("git rev-parse --abbrev-ref HEAD", "git rev-parse --abbrev-ref HEAD", { silence: true });
   return r.ok ? r.stdout.trim() : "";
 }
 
 export async function worktreeClean() {
-  const r = await run("git status --porcelain", "git status");
+  const r = await runCommand("gss", { label: "git status --short" });
   return r.ok && r.stdout.trim().length === 0;
 }
 
 export async function fetchOrigin() {
-  return run("git fetch origin", "git fetch origin");
+  return runCommand("gfo");
 }
 
 export async function resolveOriginDefaultRef() {
@@ -52,24 +52,24 @@ export async function getBranchStatus(): Promise<BranchStatus | null> {
 export async function rebaseOntoOriginDefault() {
   await fetchOrigin();
   const onto = await resolveOriginDefaultRef();
-  const rb = await run(`git rebase ${onto}`, `git rebase ${onto}`);
+  const rb = await runCommand("grb", { target: onto, autostash: false, label: `git rebase ${onto}` });
   return { onto, ok: rb.ok };
 }
 
 export async function createBranch(name: string) {
-  return run(`git checkout -b ${name}`, `git checkout -b ${name}`);
+  return runCommand("gcb", { name });
 }
 
 export async function stageAll() {
-  return run("git add -A", "git add -A");
+  return runCommand("gaa");
 }
 
 export async function commit(msg: string) {
-  return run(`git commit -m ${JSON.stringify(msg)}`, `git commit -m ${msg}`);
+  return runCommand("gcmsg", { message: msg, label: `git commit --message ${msg}` });
 }
 
 export async function pushSetUpstream(branch: string) {
-  return run(`git push -u origin ${branch}`, `git push -u origin ${branch}`);
+  return runCommand("gpsup", { branch });
 }
 
 function parseBranchStatus(output: string): BranchStatus {

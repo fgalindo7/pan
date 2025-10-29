@@ -2,6 +2,7 @@ import { exec as _exec } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { resolveCommand, type CommandAlias, type CommandContext } from "./commands.js";
 export const execp = promisify(_exec);
 
 /**
@@ -84,6 +85,15 @@ export async function run(cmd: string, name = cmd, options: RunOptions = {}) {
     notifyRecorders({ command: cmd, label: name, ok: false, exitCode: e?.code ?? 1, durationMs: ms, timestamp: Date.now() });
     return { ok: false, stdout: out, stderr: err, code: e?.code ?? 1, logFile } as const;
   }
+}
+
+export async function runCommand(
+  alias: CommandAlias,
+  context: CommandContext = {},
+  options: RunOptions = {}
+) {
+  const instance = resolveCommand(alias, context);
+  return run(instance.command, instance.label, options);
 }
 
 function log(step: string, code: number, out: string, err: string, ms: number) {

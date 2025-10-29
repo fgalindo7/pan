@@ -1,6 +1,6 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { run, addCommandRecorder, summarizeSuccessfulCommands, type CommandRecord } from "./run.js";
+import { runCommand, addCommandRecorder, summarizeSuccessfulCommands, type CommandRecord } from "./run.js";
 import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit, pushSetUpstream, worktreeClean, getBranchStatus } from "./git.js";
 import { userName, validFeatureBranch, sanitizeSegment, ALLOWED_PREFIX } from "./policy.js";
 import { smartBuildFix } from "./fix.js";
@@ -91,7 +91,7 @@ export async function pushFlow() {
       await lintFix();
       await typeCheck();
       await stageAll();
-      await run("git commit --no-edit || true","git commit --no-edit");
+      await runCommand("gcn");
       const dic2 = await dirtyIndexCheck();
       if (!dic2.ok) throw new Error("dirty-index-check still failing.");
     }
@@ -147,7 +147,7 @@ export async function pushFlow() {
 }
 
 async function stashIfNeeded(): Promise<{ ref: string | null } | null> {
-  const status = await run("git status --porcelain", "git status snapshot", { silence: true });
+  const status = await runCommand("gss", { label: "git status --short snapshot" }, { silence: true });
   if (!status.ok) return null;
   const lines = status.stdout.split(/\r?\n/).filter(Boolean);
   if (!lines.length) return null;
@@ -167,11 +167,11 @@ async function stashIfNeeded(): Promise<{ ref: string | null } | null> {
   }
   const message = `pan stash before rebase (staged:${staged}, unstaged:${unstaged}, untracked:${untracked})`;
   console.log(`[pan] creating stash: ${message}`);
-  const pushRes = await run(`git stash push --include-untracked -m ${JSON.stringify(message)}`, "git stash push (pre-rebase)");
+  const pushRes = await runCommand("gsta", { message, label: "git stash push (pre-rebase)" });
   if (!pushRes.ok) {
     throw new Error("Failed to stash working tree before rebase. Inspect .repo-doctor logs for details.");
   }
-  const refRes = await run("git stash list --format=%gd -1", "git stash resolve", { silence: true });
+  const refRes = await runCommand("gstl", { label: "git stash resolve" }, { silence: true });
   const ref = refRes.ok && refRes.stdout ? refRes.stdout.trim() : "stash@{0}";
   console.log(`[pan] stash saved as ${ref}`);
   return { ref };
@@ -179,12 +179,12 @@ async function stashIfNeeded(): Promise<{ ref: string | null } | null> {
 
 async function applyStash(ref: string) {
   console.log(`[pan] restoring ${ref}`);
-  const applyRes = await run(`git stash apply ${ref}`, `git stash apply ${ref}`);
+  const applyRes = await runCommand("gstaa", { ref, label: `git stash apply ${ref}` });
   if (!applyRes.ok) {
     console.log(`[pan] stash apply failed; ${ref} kept for manual inspection.`);
     return;
   }
-  await run(`git stash drop ${ref}`, `git stash drop ${ref}`);
+  await runCommand("gstd", { ref, label: `git stash drop ${ref}` });
 }
 
 async function promptYesNo(question: string, defaultYes = true) {
