@@ -1,0 +1,9 @@
+push:
+  branch:
+    prefix: docs
+    name: answers-flag
+  commit:
+    firstLine: "docs: document answers-driven push"
+    body: |
+      Document the new --answers automation option in README and AGENT guides.
+      Validated CLI behavior by running pan push with the answers file.

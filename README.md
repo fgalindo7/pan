@@ -153,6 +153,7 @@ Pan accepts optional flags so automations can answer the interactive prompts ahe
 - `--branch-name <name>` — provide the slug that follows the prefix (Pan sanitizes it for you).
 - `--commit-first-line <subject>` — supply the commit subject when Pan needs to create a commit.
 - `--commit-body <body>` — optional commit body passed as an additional `git commit -m` argument.
+- `--answers <file>` — load a JSON/YAML file that pre-populates any of the above (file values take priority; flags fill in the gaps).
 
 Omitted flags fall back to the usual interactive questions, so you can mix scripted and manual flows. Example automation:
 
@@ -162,6 +163,24 @@ pan push \
   --branch-name agent-guide \
   --commit-first-line "docs: refresh agent guide" \
   --commit-body "Explain the new non-interactive flags for future agents."
+```
+
+Prefer a declarative setup? Drop the answers into a file and point `pan push` at it:
+
+```yaml
+# pan-push.answers.yaml
+push:
+  branch:
+    prefix: docs
+    name: agent-guide
+  commit:
+    firstLine: "docs: refresh agent guide"
+    body: |
+      Explain the new non-interactive flags for future agents.
+```
+
+```sh
+pan push --answers pan-push.answers.yaml
 ```
 
 Set the environment variable `PAN_DOCKER_DEV_CMD` to a custom remediation command if your monorepo relies on starting local Docker services during the build (optional).
