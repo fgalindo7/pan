@@ -140,12 +140,23 @@ pan diagnose   # quick checks (build/typecheck/lint) with a summarized failure r
 pan fix        # smart remediation for build
 pan prepush    # lint --fix, type-check, targeted tests, dirty-index-check
 pan chat       # contextual LLM session; Pan runs suggested commands with you in loop
+pan toolkit    # show alias catalog and quick installers (init/install)
 pan help       # detailed usage guide and environment knobs
 ```
 
 Set the environment variable `PAN_DOCKER_DEV_CMD` to a custom remediation command if your monorepo relies on starting local Docker services during the build (optional).
 
 Pan inspects `yarn workspaces list`, `git status`, and package.json scripts to determine which builds/tests to run. When a build fails, Pan tries the best repair scripts it can find (e.g., `yarn cache clean`, `npx prisma generate`, workspace `migrate`/`fix:*` scripts) before retrying targeted builds.
+
+### 🧰 Toolkit aliases
+
+Pan ships a handful of remediation shortcuts (for example `ycc` → `yarn cache clean` and `yi` → `yarn install`).
+
+- Preferred: `pan toolkit install` — appends the alias block to your shell profile (Pan detects `~/.zshrc` / `~/.bashrc`; override with `--profile`).
+- Quick session: run `eval "$(pan toolkit init)"` in your terminal to enable aliases immediately.
+- `pan toolkit` prints the alias catalog and reminds you of both setup options.
+
+All remediation commands now live in a single registry (`src/lib/commands.ts`), so the same aliases power `pan fix`, `pan push`, the toolkit output, and the recorded command log. Updating the registry automatically updates every flow.
 
 ## 🧠 Optional AI Integration
 

@@ -1,4 +1,4 @@
-import { run } from "./run.js";
+import { runCommand } from "./run.js";
 import { changedWorkspaces, hasScript, listWorkspaces, workspaceScriptCommand, WorkspaceInfo } from "./workspaces.js";
 
 const testScriptPreference = ["test:ci", "test:coverage", "test", "unit:test", "test:unit"];
@@ -9,13 +9,17 @@ export async function lintFix() {
   if (!root) return skip("lint --fix", "workspace metadata unavailable");
 
   if (hasScript(root, "lint:fix")) {
-    const cmd = workspaceScriptCommand(root, "lint:fix");
-    return run(cmd, "lint:fix");
+    return runCommand("workspace-script", {
+      command: workspaceScriptCommand(root, "lint:fix"),
+      label: "lint:fix",
+    });
   }
 
   if (hasScript(root, "lint")) {
-    const cmd = workspaceScriptCommand(root, "lint");
-    return run(`${cmd} --fix`, "lint --fix");
+    return runCommand("workspace-script", {
+      command: `${workspaceScriptCommand(root, "lint")} --fix`,
+      label: "lint --fix",
+    });
   }
 
   console.log("[pan] ℹ skipping lint --fix (script not found).");
@@ -32,8 +36,10 @@ export async function typeCheck() {
     return skip("type-check", "script not found");
   }
 
-  const cmd = workspaceScriptCommand(root, script);
-  return run(cmd, script);
+  return runCommand("workspace-script", {
+    command: workspaceScriptCommand(root, script),
+    label: script,
+  });
 }
 
 export async function dirtyIndexCheck() {
@@ -45,8 +51,10 @@ export async function dirtyIndexCheck() {
     return skip("dirty-index-check", "script not found");
   }
 
-  const cmd = workspaceScriptCommand(root, "dirty-index-check");
-  return run(cmd, "dirty-index-check");
+  return runCommand("workspace-script", {
+    command: workspaceScriptCommand(root, "dirty-index-check"),
+    label: "dirty-index-check",
+  });
 }
 
 export async function runRelevantTests(): Promise<boolean> {
@@ -58,7 +66,10 @@ export async function runRelevantTests(): Promise<boolean> {
   }
   let ok = true;
   for (const entry of commands) {
-    const res = await run(entry.cmd, `${entry.workspace.isRoot ? "root" : entry.workspace.name} ${entry.script}`);
+    const res = await runCommand("workspace-script", {
+      command: entry.cmd,
+      label: `${entry.workspace.isRoot ? "root" : entry.workspace.name} ${entry.script}`,
+    });
     if (!res.ok) ok = false;
   }
   return ok;
@@ -83,8 +94,10 @@ function selectFirstScript(ws: WorkspaceInfo, candidates: string[]) {
   return null;
 }
 
+type RunResult = Awaited<ReturnType<typeof runCommand>>;
+
 function skip(label: string, reason: string) {
-  return { ok: true, stdout: "", stderr: `skipped: ${reason}`, logFile: "" } as Awaited<ReturnType<typeof run>>;
+  return { ok: true, stdout: "", stderr: `skipped: ${reason}`, logFile: "" } as RunResult;
 }
 
 async function gatherTestCommands(targets: WorkspaceInfo[]) {

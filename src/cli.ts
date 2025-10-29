@@ -2,14 +2,36 @@ import { Command } from "commander";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import * as fs from "node:fs";
-import { run, summarizeSuccessfulCommands } from "./lib/run.js";
-import { getToolkitCommands } from "./lib/toolkit.js";
+import path from "node:path";
+import { run, runCommand, summarizeSuccessfulCommands } from "./lib/run.js";
 import { pushFlow } from "./lib/push.js";
 import { consultChatGPT, logContextFromFile, resetChatGPTSession, getAssistantMode, requiresOpenAIKey, hasLocalAssistantCommand, localAssistantCommandLabel } from "./lib/chatgpt.js";
 import { listWorkspaces, changedWorkspaces, changedFiles } from "./lib/workspaces.js";
 import { currentBranch, worktreeClean } from "./lib/git.js";
 
 const program = new Command();
+
+const ANSI_RESET = "\x1b[0m";
+const ANSI_WHITE = "\x1b[37m";
+const ANSI_ORANGE = "\x1b[38;5;208m";
+const ANSI_GREEN = "\x1b[32m";
+const ANSI_BLUE = "\x1b[34m";
+const ANSI_YELLOW = "\x1b[33m";
+const ANSI_MAGENTA = "\x1b[35m";
+
+function colorize(text: string, color: string): string {
+  return `${color}${text}${ANSI_RESET}`;
+}
+
+function colorForToolkitCategories(categories: readonly string[]): string {
+  if (categories.includes("git")) return ANSI_ORANGE;
+  if (categories.some(category => category === "yarn" || category === "workspace")) return ANSI_GREEN;
+  if (categories.includes("docker")) return ANSI_BLUE;
+  if (categories.includes("remediation")) return ANSI_YELLOW;
+  if (categories.includes("utility")) return ANSI_MAGENTA;
+  return ANSI_WHITE;
+}
+
 program
   .name("pan")
   .description("Pan — the monorepo shepherd. From panic to push: fix, harmonize, and deliver.")
@@ -118,6 +140,82 @@ program.command("diagnose")
     process.exitCode = exitCode;
   });
 
+const toolkit = program.command("toolkit")
+  .description("Show remediation aliases and installation helpers")
+  .action(async () => {
+    const { listToolkitCommands } = await import("./lib/commands.js");
+    const entries = listToolkitCommands();
+    const aliasWidth = entries.reduce((width, entry) => Math.max(width, entry.alias.length), 0) + 2;
+    console.log("[pan] Pan toolkit commands:");
+    for (const entry of entries) {
+      const aliasColumn = entry.alias.padEnd(aliasWidth, " ");
+      const aliasColor = colorForToolkitCategories(entry.categories);
+      const coloredAlias = colorize(aliasColumn, aliasColor);
+      const arrow = colorize("->", ANSI_WHITE);
+      const commandText = colorize(entry.command, ANSI_WHITE);
+      console.log(`[pan] ${coloredAlias}${arrow} ${commandText} — ${entry.description}`);
+    }
+    console.log("\nTwo quick ways to enable these aliases:");
+    console.log("  3) Preferred — run pan toolkit install to add them to your shell profile permanently.");
+    console.log("  1) Temporary shell session — run eval \"$(pan toolkit init)\" to enable aliases now.");
+  });
+
+toolkit.command("init")
+  .description("Print shell aliases so you can eval them from your profile")
+  .action(async () => {
+    const { generateToolkitSnippet } = await import("./lib/toolkit.js");
+    const snippet = generateToolkitSnippet().trimEnd();
+    console.log(snippet);
+  });
+
+toolkit.command("install")
+  .description("Append toolkit aliases to your shell profile (preferred)")
+  .option("--profile <path>", "Override the profile file to edit")
+  .action(async (options: { profile?: string }) => {
+    const { installToolkitAliases, resolveDefaultProfile } = await import("./lib/toolkit.js");
+
+    let targetProfile = options.profile ? path.resolve(options.profile) : "";
+    const detectedProfile = options.profile ? targetProfile : resolveDefaultProfile();
+
+    if (!targetProfile) {
+      if (detectedProfile) {
+        const answer = (await promptLine(`[pan] Profile file [${detectedProfile}]: `)).trim();
+        targetProfile = answer ? path.resolve(answer) : detectedProfile;
+      } else {
+        const answer = (await promptLine("[pan] Profile file (enter path): ")).trim();
+        if (answer) targetProfile = path.resolve(answer);
+      }
+    }
+
+    if (!targetProfile) {
+      console.log("[pan] Unable to determine a shell profile. Pass --profile <file> to specify one explicitly.");
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`[pan] Toolkit aliases will be added to ${targetProfile}.`);
+    const confirmed = await promptYesNo("[pan] Continue? [Y/n] ", true);
+    if (!confirmed) {
+      console.log("[pan] Installation cancelled — no changes made.");
+      return;
+    }
+
+    try {
+      const result = await installToolkitAliases(targetProfile);
+      if (result.status === "installed") {
+        console.log(`[pan] Added toolkit aliases to ${result.profilePath}. Restart your shell or run 'source "${result.profilePath}"' to load them.`);
+      } else if (result.reason === "already-installed") {
+        console.log(`[pan] Toolkit aliases already present in ${result.profilePath}. Nothing to do.`);
+      } else if (result.reason === "no-profile") {
+        console.log("[pan] Could not resolve a profile file. Provide --profile to specify it explicitly.");
+        process.exitCode = 1;
+      }
+    } catch (error: any) {
+      console.error("[pan] Failed to install toolkit aliases:", error?.message || error);
+      process.exitCode = 1;
+    }
+  });
+
 program.command("fix")
   .description("Smart remediation for build failures")
   .action(async () => {
@@ -215,7 +313,7 @@ program.command("chat")
     if (shouldOfferBuild) {
       const runBuild = await promptYesNo("[pan] Run `yarn build` now to capture current status? [Y/n] ", true);
       if (runBuild) {
-        const buildResult = await run("yarn build", "chat build snapshot");
+        const buildResult = await runCommand("yb", { label: "chat build snapshot" });
         buildStatus = buildResult.ok ? "yarn build succeeded" : `yarn build failed (exit ${buildResult.code ?? "unknown"})`;
         if (buildResult.logFile) logs.push(logContextFromFile("yarn build", buildResult.logFile));
       }
@@ -223,7 +321,7 @@ program.command("chat")
       console.log("[pan] Build snapshot skipped (clean worktree with dependencies present).");
     }
 
-    const gitStatus = await run("git status --short", "chat git status", { silence: true });
+  const gitStatus = await runCommand("gss", { label: "chat git status" }, { silence: true });
     if (gitStatus.logFile) logs.push(logContextFromFile("git status --short", gitStatus.logFile));
 
     const summaryLines = [
@@ -254,14 +352,6 @@ program.command("chat")
       logs,
     });
   });
-
-const toolkit = program.command("toolkit").description("Inspect Pan's command toolkit");
-toolkit
-  .command("ls")
-  .description("List command aliases available to Pan")
-  .action(listToolkitAliases);
-
-toolkit.action(listToolkitAliases);
 
 program.parseAsync();
 
@@ -364,6 +454,18 @@ pan push
   Handle feature branch enforcement, stash + rebase, smart build fix, pre-push
   checks, commit prompt, dirty-index policing, and push to origin.
 
+pan toolkit
+  List Pan's remediation aliases and show setup options.
+  Option 3 (preferred): run "pan toolkit install" to append them to your shell profile.
+  Option 1: run 'eval "$(pan toolkit init)"' to enable aliases for the current shell.
+
+pan toolkit init
+  Print the alias definitions so you can eval or redirect them into a profile.
+
+pan toolkit install
+  Append the alias block to your shell profile (defaults to ~/.zshrc or ~/.bashrc).
+  Use '--profile <path>' to target another file.
+
 pan chat
   Provide project/repo/build context, run optional yarn build snapshot, prompt
   for an OpenAI API key if missing (in ChatGPT mode), or leverage a local LLM
@@ -410,21 +512,21 @@ async function ensureDockerLlama3Setup() {
   const command = `docker exec -i ${container} ollama run ${model}`;
 
   console.log(`[pan] Setting up Docker-based ${model} using image ${image} (container ${container}).`);
-  const pull = await run(`docker pull ${image}`, `docker pull ${image}`);
+  const pull = await runCommand("docker-pull", { image, label: `docker pull ${image}` });
   if (!pull.ok) {
     console.log("[pan] Failed to pull Docker image. Ensure Docker is running and you have network access.");
     return false;
   }
 
-  const inspect = await run(`docker inspect ${container}`, `docker inspect ${container}`, { silence: true });
+  const inspect = await runCommand("docker-inspect", { container, label: `docker inspect ${container}` }, { silence: true });
   if (!inspect.ok) {
-    const runContainer = await run(`docker run -d --name ${container} -p 11434:11434 ${image}`, `docker run ${container}`);
+  const runContainer = await runCommand("docker-run", { container, image, label: `docker run ${container}` });
     if (!runContainer.ok) {
       console.log("[pan] Failed to start Docker container.");
       return false;
     }
   } else {
-    const start = await run(`docker start ${container}`, `docker start ${container}`, { silence: true });
+  const start = await runCommand("docker-start", { container, label: `docker start ${container}` }, { silence: true });
     if (!start.ok) {
       console.log("[pan] Failed to start existing Docker container.");
       return false;
@@ -433,7 +535,7 @@ async function ensureDockerLlama3Setup() {
 
   await new Promise(resolve => setTimeout(resolve, 3000));
 
-  const pullModel = await run(`docker exec -i ${container} ollama pull ${model}`, `docker exec ${container} ollama pull ${model}`);
+  const pullModel = await runCommand("docker-exec-pull", { container, model, label: `docker exec ${container} ollama pull ${model}` });
   if (!pullModel.ok) {
     console.log("[pan] Failed to pull llama3 model inside the container.");
     return false;
@@ -475,19 +577,4 @@ async function promptYesNo(question: string, defaultYes: boolean) {
 function indent(text: string, spaces = 2) {
   const pad = " ".repeat(spaces);
   return text.split("\n").map(line => (line.length ? pad + line : line)).join("\n");
-}
-
-function listToolkitAliases() {
-  const entries = getToolkitCommands();
-  if (entries.length === 0) {
-    console.log("[pan] No toolkit commands are currently registered.");
-    return;
-  }
-  const aliasWidth = Math.max(4, ...entries.map(entry => entry.alias.length));
-  console.log("[pan] Pan toolkit commands:");
-  for (const entry of entries) {
-    const desc = entry.description ? ` — ${entry.description}` : "";
-    const sourceTag = entry.source === "env" ? " (from environment)" : "";
-    console.log(`[pan] ${entry.alias.padEnd(aliasWidth, " ")} -> ${entry.command}${desc}${sourceTag}`);
-  }
 }

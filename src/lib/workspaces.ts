@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { run } from "./run.js";
+import { runCommand } from "./run.js";
 
 export interface WorkspaceInfo {
   name: string;
@@ -23,7 +23,7 @@ export async function listWorkspaces(): Promise<WorkspaceInfo[]> {
     isRoot: true,
   });
 
-  const res = await run("yarn workspaces list --json", "yarn workspaces list");
+  const res = await runCommand("ywls");
   if (res.ok && res.stdout) {
     const lines = res.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     for (const line of lines) {
@@ -58,7 +58,7 @@ function readPackageJson(pkgPath: string) {
 }
 
 export async function changedFiles(): Promise<string[]> {
-  const status = await run("git status --porcelain", "git status --porcelain", { silence: true });
+  const status = await runCommand("gss", { label: "git status --short" }, { silence: true });
   if (!status.ok) return [];
   const files: string[] = [];
   const lines = status.stdout.split(/\r?\n/).filter(Boolean);

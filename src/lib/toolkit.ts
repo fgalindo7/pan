@@ -1,74 +1,99 @@
-export const FFYC_COMMAND = "find packages -name \"build\" -type d -exec rm -rf {} + 2>/dev/null && find packages -name \"tsconfig.tsbuildinfo\" -type f -delete && find . -name \"node_modules\" -type d -exec rm -rf {} + 2>/dev/null";
+import os from "node:os";
+import path from "node:path";
+import * as fs from "node:fs/promises";
+import { listToolkitCommands, type CommandInstance } from "./commands.js";
 
-export interface ToolkitEntry {
-	alias: string;
-	command: string;
-	description?: string;
-	source: "core" | "env";
+export interface ToolkitAlias {
+  alias: string;
+  command: string;
+  description: string;
 }
 
-const BASE_TOOLKIT: ToolkitEntry[] = [
-	{
-		alias: "git-fetch",
-		command: "git fetch --prune",
-		description: "Fetch remote refs and prune stale branches",
-		source: "core",
-	},
-	{
-		alias: "git-rebase",
-		command: "git rebase --autostash origin/master",
-		description: "Rebase current branch onto origin/master with autostash",
-		source: "core",
-	},
-	{
-		alias: "ycc",
-		command: "yarn cache clean",
-		description: "Clear Yarn cache",
-		source: "core",
-	},
-	{
-		alias: "yi",
-		command: "yarn install",
-		description: "Install dependencies",
-		source: "core",
-	},
-	{
-		alias: "yb",
-		command: "yarn build",
-		description: "Run root build script",
-		source: "core",
-	},
-	{
-		alias: "yl",
-		command: "yarn lint",
-		description: "Run lint checks",
-		source: "core",
-	},
-	{
-		alias: "ytc",
-		command: "yarn type-check",
-		description: "Run TypeScript type-check",
-		source: "core",
-	},
-	{
-		alias: "ffyc",
-		command: FFYC_COMMAND,
-		description: "Deep clean build artifacts, tsbuildinfo, and node_modules",
-		source: "core",
-	},
-];
+function getToolkitAliases(): ToolkitAlias[] {
+  return listToolkitCommands().map((entry: CommandInstance) => ({
+    alias: entry.alias,
+    command: entry.command,
+    description: entry.description,
+  }));
+}
 
-export function getToolkitCommands(): ToolkitEntry[] {
-	const entries: ToolkitEntry[] = [...BASE_TOOLKIT];
-	const docker = process.env.PAN_DOCKER_DEV_CMD?.trim();
-	if (docker) {
-		entries.push({
-			alias: "docker-dev",
-			command: docker,
-			description: "Custom Docker remediation (PAN_DOCKER_DEV_CMD)",
-			source: "env",
-		});
-	}
+const SENTINEL_BEGIN = "# >>> pan toolkit aliases >>>";
+const SENTINEL_END = "# <<< pan toolkit aliases <<<";
 
-	return entries.sort((a, b) => a.alias.localeCompare(b.alias));
+export function formatToolkitListing(): string {
+  const aliases = getToolkitAliases();
+  const rows = aliases.map(entry => `  ${entry.alias.padEnd(10)} → ${entry.command} (${entry.description})`);
+  return [
+    "Pan Remediation Toolkit",
+    "------------------------",
+    ...rows,
+  ].join("\n");
+}
+
+export function generateToolkitSnippet(): string {
+  const body = getToolkitAliases()
+    .map(entry => `alias ${entry.alias}='${entry.command.replace(/'/g, "'\\''")}'`)
+    .join("\n");
+  return [
+    SENTINEL_BEGIN,
+    "# Drop this block into your shell profile (e.g. ~/.zshrc) to enable Pan toolkit aliases.",
+    body,
+    SENTINEL_END,
+    "",
+  ].join("\n");
+}
+
+export interface InstallResult {
+  profilePath: string;
+  status: "installed" | "skipped";
+  reason?: string;
+}
+
+export async function installToolkitAliases(profilePath?: string): Promise<InstallResult> {
+  const resolvedProfile = profilePath ? resolveProfilePath(profilePath) : resolveDefaultProfile();
+  if (!resolvedProfile) {
+    return { profilePath: "", status: "skipped", reason: "no-profile" };
+  }
+
+  const snippet = generateToolkitSnippet();
+  let existing = "";
+  try {
+    existing = await fs.readFile(resolvedProfile, "utf8");
+  } catch (error: any) {
+    if (error?.code === "ENOENT") {
+      await fs.mkdir(path.dirname(resolvedProfile), { recursive: true });
+      existing = "";
+    } else {
+      throw error;
+    }
+  }
+
+  if (existing.includes(SENTINEL_BEGIN)) {
+    return { profilePath: resolvedProfile, status: "skipped", reason: "already-installed" };
+  }
+
+  const content = existing.endsWith("\n") ? existing + snippet : existing + "\n" + snippet;
+  await fs.writeFile(resolvedProfile, content, "utf8");
+  return { profilePath: resolvedProfile, status: "installed" };
+}
+
+export function resolveDefaultProfile(): string | null {
+  const shell = process.env.SHELL || "";
+  const home = os.homedir();
+  if (!home) return null;
+  if (shell.includes("zsh")) return path.join(home, ".zshrc");
+  if (shell.includes("bash")) return path.join(home, ".bashrc");
+  return path.join(home, ".profile");
+}
+
+function resolveProfilePath(input: string) {
+  const expanded = expandHome(input);
+  return path.resolve(expanded);
+}
+
+function expandHome(p: string) {
+  if (!p) return p;
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
 }
