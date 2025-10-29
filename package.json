@@ -18,7 +18,8 @@
     "pan": "bin/pan"
   },
   "dependencies": {
-    "commander": "^14.0.2"
+    "commander": "^14.0.2",
+    "picocolors": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.9.1",
