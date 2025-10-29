@@ -3,14 +3,14 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { run, addCommandRecorder, type CommandRecord } from "./run.js";
+import { resolveOriginDefaultRef, getBranchStatus, type BranchStatus } from "./git.js";
+import { FFYC_COMMAND } from "./toolkit.js";
 import { consultChatGPT, logContextFromFile } from "./chatgpt.js";
 import { changedWorkspaces, findScriptsByKeywords, hasScript, listWorkspaces, workspaceScriptCommand, WorkspaceInfo } from "./workspaces.js";
 
 const dockerRemediationCmd = process.env.PAN_DOCKER_DEV_CMD?.trim();
 const buildScriptPreference = ["build:ci", "build", "compile", "prepare"];
 const remediationKeywordDefaults = ["fix", "clean", "prepare", "postinstall"];
-const FFYC_COMMAND = "find packages -name \"build\" -type d -exec rm -rf {} + 2>/dev/null && find packages -name \"tsconfig.tsbuildinfo\" -type f -delete && find . -name \"node_modules\" -type d -exec rm -rf {} + 2>/dev/null";
-
 type RunResult = Awaited<ReturnType<typeof run>>;
 
 interface BuildFailure {
@@ -50,7 +50,7 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
 
     const priority = await attemptPriorityRemediation(rootWorkspace);
     if (priority.status === "ok") {
-      steps.push("Priority remediation (git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc) completed successfully.");
+      steps.push(`Priority remediation (${priority.chainLabel}) completed successfully.`);
       return {
         ok: true,
         summary: "Priority remediation finished cleanly; no further build work was required.",
@@ -64,7 +64,7 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
 
     if (priority.status === "blocked") {
       const summary = priority.message;
-      steps.push(`Priority remediation blocked: ${priority.message}`);
+      steps.push(`Priority remediation blocked during ${priority.chainLabel}: ${priority.message}`);
       return {
         ok: false,
         summary,
@@ -78,8 +78,8 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
     }
   const continuationReason = priority.reason;
   steps.push(continuationReason
-    ? `Priority remediation could not complete (${continuationReason}); continuing with targeted builds.`
-    : "Priority remediation completed; continuing with targeted builds.");
+    ? `Priority remediation could not complete during ${priority.chainLabel} (${continuationReason}); continuing with targeted builds.`
+    : `Priority remediation completed (${priority.chainLabel}); continuing with targeted builds.`);
 
   const first = await runBuildSequence(targets);
   totalRuns += first.ran;
@@ -176,36 +176,55 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
 }
 
 type PriorityOutcome =
-  | { status: "ok" }
-  | { status: "continue"; reason?: string }
-  | { status: "blocked"; message: string };
+  | { status: "ok"; target: string; chainLabel: string }
+  | { status: "continue"; target: string; chainLabel: string; reason?: string }
+  | { status: "blocked"; target: string; chainLabel: string; message: string };
 
 async function attemptPriorityRemediation(root: WorkspaceInfo | null): Promise<PriorityOutcome> {
-  console.log("[pan] Priority remediation: git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc");
+  const steps = priorityCommandSteps(root);
+  let target = "origin/master";
+  let chainLabel = priorityChainLabel(target, steps);
 
   const fetchRes = await run("git fetch --prune", "git fetch origin");
   if (!fetchRes.ok) {
     console.log("[pan] Priority remediation: git fetch failed, continuing with standard flow.");
-    return { status: "continue", reason: "git fetch origin" };
+    return { status: "continue", reason: "git fetch origin", target, chainLabel };
   }
 
-  const rebaseRes = await run("git rebase --autostash origin/master", "git rebase origin/master");
+  target = await resolveOriginDefaultRef();
+  chainLabel = priorityChainLabel(target, steps);
+  console.log(`[pan] Priority remediation: ${chainLabel}`);
+
+  const rebaseRes = await run(`git rebase --autostash ${target}`, `git rebase ${target}`);
   if (!rebaseRes.ok) {
-    console.log("[pan] Priority remediation: git rebase origin/master failed — manual resolution required.");
-    const message = await explainRebaseFailure();
-    return { status: "blocked", message };
+    console.log(`[pan] Priority remediation: git rebase ${target} failed — manual resolution required.`);
+    const message = await explainRebaseFailure(target);
+    return { status: "blocked", message, target, chainLabel };
   }
 
-  const steps = priorityCommandSteps(root);
   for (const step of steps) {
     const res = await run(step.cmd, step.label);
     if (!res.ok) {
       console.log(`[pan] Priority remediation: ${step.label} failed, falling back to standard remediation.`);
-      return { status: "continue", reason: step.label };
+      return { status: "continue", reason: step.label, target, chainLabel };
     }
   }
 
-  return { status: "ok" };
+  return { status: "ok", target, chainLabel };
+}
+
+function priorityChainLabel(target: string, steps: Array<{ label: string }>) {
+  const aliasMap = new Map<string, string>([
+    ["yarn cache clean", "ycc"],
+    ["yarn install", "yi"],
+    ["yarn build", "yb"],
+    ["yarn lint", "yl"],
+    ["yarn type-check", "ytc"],
+  ]);
+  const tail = steps
+    .map(step => aliasMap.get(step.label) ?? step.label)
+    .join(" → ");
+  return tail ? `git fetch → git rebase ${target} → ${tail}` : `git fetch → git rebase ${target}`;
 }
 
 function priorityCommandSteps(root: WorkspaceInfo | null) {
@@ -214,8 +233,14 @@ function priorityCommandSteps(root: WorkspaceInfo | null) {
     { cmd: "yarn install", label: "yarn install" },
   ];
 
-  const buildCmd = scriptCommand(root, "build") || "yarn run build";
-  steps.push({ cmd: buildCmd, label: "yarn build" });
+  if (root && hasScript(root, "build")) {
+    const buildCmd = scriptCommand(root, "build");
+    if (buildCmd) {
+      steps.push({ cmd: buildCmd, label: "yarn build" });
+    }
+  } else {
+    console.log("[pan] Priority remediation: skipping yarn build (script not found).");
+  }
 
   const lintCmd = scriptCommand(root, "lint");
   if (lintCmd) {
@@ -367,29 +392,21 @@ function humanJoin(items: string[]) {
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
-interface BranchStatusInfo {
-  name: string;
-  upstream?: string;
-  ahead: number;
-  behind: number;
-  detached: boolean;
-}
-
 interface RebaseDiagnostics {
-  branchStatus: BranchStatusInfo;
+  branchStatus: BranchStatus;
   head: string;
   rebaseInProgress: boolean;
   autoAborted: boolean;
 }
 
-async function explainRebaseFailure() {
+async function explainRebaseFailure(target: string) {
   const diagnostics = await gatherRebaseDiagnostics();
   const { branchStatus, head, rebaseInProgress, autoAborted } = diagnostics;
   const branchLabel = branchStatus.name && branchStatus.name !== "(detached)" ? branchStatus.name : "your branch";
   const upstreamLabel = branchStatus.upstream || "its upstream";
 
   const lines: string[] = [
-    "git rebase origin/master failed, so Pan paused automated remediation to avoid corrupting your branch history.",
+    `git rebase ${target} failed, so Pan paused automated remediation to avoid corrupting your branch history.`,
   ];
 
   if (branchStatus.detached && head) {
@@ -417,9 +434,19 @@ async function explainRebaseFailure() {
 
   if (branchStatus.upstream) {
     const upstream = branchStatus.upstream;
-    suggestions.push(`- Decide how to reconcile ${branchLabel} with ${upstream}. If you want the remote history, run \`git fetch origin && git reset --hard ${upstream}\`. If you need your local commits, create a backup branch and replay them after syncing with ${upstream}.`);
+    suggestions.push(
+      "- Decide how to reconcile " +
+        branchLabel +
+        " with " +
+        upstream +
+        ". If you want the remote history, run `git fetch origin && git reset --hard " +
+        upstream +
+        "`. If you need your local commits, create a backup branch and replay them after syncing with " +
+        upstream +
+        "."
+    );
   } else {
-    suggestions.push("- Reconcile your branch with the remote history, then rerun `pan fix`.");
+    suggestions.push("- Reconcile your branch with " + target + ", then rerun `pan fix`.");
   }
 
   suggestions.push("- After the branch history is settled, rerun `pan fix` to continue remediation.");
@@ -433,8 +460,12 @@ async function gatherRebaseDiagnostics(): Promise<RebaseDiagnostics> {
   const rebaseApply = path.join(gitDir, "rebase-apply");
   const rebaseInProgress = fs.existsSync(rebaseMerge) || fs.existsSync(rebaseApply);
 
-  const statusRes = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch", { silence: true });
-  const branchStatus = parseBranchStatus(statusRes.ok ? statusRes.stdout : "");
+  const branchStatus: BranchStatus = (await getBranchStatus()) ?? {
+    name: "",
+    ahead: 0,
+    behind: 0,
+    detached: false,
+  };
 
   const headRes = await run("git rev-parse --short HEAD", "git rev-parse --short HEAD", { silence: true });
   const head = headRes.ok ? headRes.stdout.trim() : "";
@@ -445,9 +476,8 @@ async function gatherRebaseDiagnostics(): Promise<RebaseDiagnostics> {
     if (abortRes.ok) {
       autoAborted = true;
       console.log("[pan] Priority remediation: auto-aborted git rebase to restore your worktree.");
-      const postStatus = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch (post-abort)", { silence: true });
-      if (postStatus.ok) {
-        const updated = parseBranchStatus(postStatus.stdout);
+      const updated = await getBranchStatus();
+      if (updated) {
         branchStatus.name = updated.name || branchStatus.name;
         branchStatus.upstream = updated.upstream ?? branchStatus.upstream;
         branchStatus.ahead = updated.ahead;
@@ -458,36 +488,6 @@ async function gatherRebaseDiagnostics(): Promise<RebaseDiagnostics> {
   }
 
   return { branchStatus, head, rebaseInProgress, autoAborted };
-}
-
-function parseBranchStatus(output: string): BranchStatusInfo {
-  const info: BranchStatusInfo = { name: "", ahead: 0, behind: 0, detached: false };
-  if (!output) return info;
-  for (const line of output.split("\n")) {
-    if (!line.startsWith("#")) continue;
-    const trimmed = line.slice(2).trim();
-    const match = trimmed.match(/^branch\.(\w+)\s+(.*)$/);
-    if (!match) continue;
-    const [, key, rawValue] = match;
-    const value = rawValue.trim();
-    if (key === "head") {
-      info.name = value;
-      if (value === "(detached)" || value.startsWith("(detached")) info.detached = true;
-    } else if (key === "upstream") {
-      info.upstream = value;
-    } else if (key === "ab") {
-      const [aheadRaw, behindRaw] = value.split(" ");
-      if (aheadRaw) info.ahead = parseAheadBehindValue(aheadRaw, "+");
-      if (behindRaw) info.behind = parseAheadBehindValue(behindRaw, "-");
-    }
-  }
-  return info;
-}
-
-function parseAheadBehindValue(value: string, prefix: "+" | "-"): number {
-  const normalized = value.startsWith(prefix) ? value.slice(1) : value;
-  const parsed = Number.parseInt(normalized, 10);
-  return Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
 }
 
 function collectScripts(targets: WorkspaceInfo[], keywords: string[], all: WorkspaceInfo[]) {

@@ -88,7 +88,10 @@ export async function run(cmd: string, name = cmd, options: RunOptions = {}) {
 
 function log(step: string, code: number, out: string, err: string, ms: number) {
   ensureDir();
-  const f = path.join(LOG_DIR, `${Date.now()}-${step.replace(/[^a-z0-9._-]/gi, "-")}.log`);
+  const sanitized = step.replace(/[^a-z0-9._-]/gi, "-");
+  const truncated = sanitized.length > 80 ? sanitized.slice(0, 80) : sanitized;
+  const slug = truncated || "step";
+  const f = path.join(LOG_DIR, `${Date.now()}-${slug}.log`);
   fs.writeFileSync(f, `# ${step}\ncode:${code}\nms:${ms}\n\n## out\n${out}\n\n## err\n${err}\n`, "utf8");
   return f;
 }

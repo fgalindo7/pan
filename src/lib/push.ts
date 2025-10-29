@@ -1,7 +1,7 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { run, addCommandRecorder, summarizeSuccessfulCommands, type CommandRecord } from "./run.js";
-import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit, pushSetUpstream } from "./git.js";
+import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit, pushSetUpstream, worktreeClean, getBranchStatus } from "./git.js";
 import { userName, validFeatureBranch, sanitizeSegment, ALLOWED_PREFIX } from "./policy.js";
 import { smartBuildFix } from "./fix.js";
 import { runPrepushChecks, dirtyIndexCheck, typeCheck, lintFix } from "./checks.js";
@@ -73,23 +73,54 @@ export async function pushFlow() {
     if (!checksOK) throw new Error("Pre-push checks still failing.");
   }
 
-  await stageAll();
-  const defMsg = "chore: prepare for push";
-  const rl = readline.createInterface({ input, output });
-  const msg = (await rl.question(`Commit message [${defMsg}]: `)).trim() || defMsg;
-  rl.close();
-  const c = await commit(msg);
-  if (!c.ok) throw new Error("Commit failed");
+  const cleanWorktree = await worktreeClean();
+  let createdCommit = false;
 
-  const dic = await dirtyIndexCheck();
-  if (!dic.ok) {
-    console.log("dirty-index-check failed after commit. Trying lint/type-check + recommit...");
-    await lintFix();
-    await typeCheck();
+  if (!cleanWorktree) {
     await stageAll();
-    await run("git commit --no-edit || true","git commit --no-edit");
-    const dic2 = await dirtyIndexCheck();
-    if (!dic2.ok) throw new Error("dirty-index-check still failing.");
+    const defMsg = "chore: prepare for push";
+    const rl = readline.createInterface({ input, output });
+    const msg = (await rl.question(`Commit message [${defMsg}]: `)).trim() || defMsg;
+    rl.close();
+    const c = await commit(msg);
+    if (!c.ok) throw new Error("Commit failed");
+
+    const dic = await dirtyIndexCheck();
+    if (!dic.ok) {
+      console.log("dirty-index-check failed after commit. Trying lint/type-check + recommit...");
+      await lintFix();
+      await typeCheck();
+      await stageAll();
+      await run("git commit --no-edit || true","git commit --no-edit");
+      const dic2 = await dirtyIndexCheck();
+      if (!dic2.ok) throw new Error("dirty-index-check still failing.");
+    }
+    createdCommit = true;
+  } else {
+    console.log("[pan] Working tree clean — no commit required.");
+  }
+
+  const branchStatus = await getBranchStatus();
+  if (!createdCommit) {
+    if (!branchStatus) {
+      console.log("[pan] Unable to determine branch status. Proceeding without additional prompts.");
+    } else {
+      const ahead = branchStatus.ahead;
+      if (ahead <= 0) {
+        console.log("[pan] Nothing new to push. Exiting without pushing.");
+        pushSucceeded = true;
+        return;
+      }
+
+      const upstream = branchStatus.upstream || "its upstream";
+      const question = `[pan] ${br} is ahead of ${upstream} by ${ahead} commit${ahead === 1 ? "" : "s"}. Push now? [Y/n] `;
+      const proceed = await promptYesNo(question, true);
+      if (!proceed) {
+        console.log("[pan] Push cancelled at your request. Local commits remain unpushed.");
+        pushSucceeded = true;
+        return;
+      }
+    }
   }
 
   if (featureBranch === "master" || featureBranch === "main") {
@@ -154,4 +185,17 @@ async function applyStash(ref: string) {
     return;
   }
   await run(`git stash drop ${ref}`, `git stash drop ${ref}`);
+}
+
+async function promptYesNo(question: string, defaultYes = true) {
+  const rl = readline.createInterface({ input, output });
+  try {
+    const response = (await rl.question(question)).trim().toLowerCase();
+    if (!response) return defaultYes;
+    if (["y", "yes"].includes(response)) return true;
+    if (["n", "no"].includes(response)) return false;
+    return defaultYes;
+  } finally {
+    rl.close();
+  }
 }
