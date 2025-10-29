@@ -1,7 +1,7 @@
 /**
  * Branch naming policy enforcement for Pan.
  */
-export const ALLOWED_PREFIX = ["feat", "fix"] as const;
+export const ALLOWED_PREFIX = ["ci", "docs", "feat", "fix", "perf", "refactor", "style"] as const;
 
 export function userName(): string {
   return process.env.USER || process.env.LOGNAME || "dev";

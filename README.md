@@ -3,7 +3,7 @@
 **Pan** is an opinionated, interactive CLI that:
 
 - refuses pushing main/master
-- enforces branch naming: `${USER}/{feat,fix}/${MESSAGE}`
+- enforces branch naming: `${USER}/{ci,docs,feat,fix,perf,refactor,style}/${MESSAGE}`
 - always rebases from origin/master (fallback origin/main) before push
 - builds only the Yarn workspaces that changed and runs the relevant test suites
 - auto-remediates build failures (cache clean, migrations, Prisma, Docker, user scripts)
