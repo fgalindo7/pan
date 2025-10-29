@@ -15,6 +15,16 @@
 - `pan chat`: Launch a GPT-5 Codex session that shares repo context, lets the user supply extra instructions, and executes suggested commands automatically.
 - `pan help`: Print the full usage guide, environment variables, and workflow expectations.
 
+## Agent Best Practices
+
+- **Drive `pan push` with scripted input.** The CLI expects interactive answers (branch confirmations, commit message, instructions). When automating, collect responses in a multiline heredoc/printf and pipe them in: `printf 'y\ncommit subject\ncommit body\n' | pan push`. This keeps the run deterministic and avoids deadlocks while waiting for stdin.
+- **Summarize actions in the prompt.** Before invoking `pan push`, echo the intended high-level plan (e.g., tests run, files touched). The CLI records the prompt in `.repo-doctor/` and surfaces it during verbose mode, making later debugging easier.
+- **Lean on `--verbose` when debugging.** Add `--verbose` to `pan diagnose|fix|prepush|push` to stream raw stdout/stderr and append detailed logs to the failure summary. Without it, Pan prints a concise red summary of the last failing command and the log file path.
+- **Respect branch policy upfront.** Ensure the current branch follows `<user>/(feat|fix|docs|ci|perf|refactor|style)/message` before calling `pan push`; automated runs fail fast if the name violates the policy.
+- **Keep the working tree tidy.** Run `git status -sb` prior to invoking Pan so you can stash or commit unrelated changes. `pan push` will auto-stash, but surfacing surprises early avoids conflicts.
+- **Watch the `.repo-doctor` logs.** Each step writes `*.log` artifacts. Tail them when a command exits non-zero; Pan links the most recent failure in its summary.
+- **Reuse `pan fix` before retries.** After manual remediation, rerun `pan fix` (or `pan push` with `--resume` once implemented) to let Pan regenerate caches, reinstall dependencies, or rerun targeted workspace builds.
+
 ## Workflow Expectations
 
 1. Repository uses Git with an `origin` remote and Yarn workspaces (or compatible scripts).
