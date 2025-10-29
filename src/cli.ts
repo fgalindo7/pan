@@ -3,6 +3,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import * as fs from "node:fs";
 import { run, summarizeSuccessfulCommands } from "./lib/run.js";
+import { getToolkitCommands } from "./lib/toolkit.js";
 import { pushFlow } from "./lib/push.js";
 import { consultChatGPT, logContextFromFile, resetChatGPTSession, getAssistantMode, requiresOpenAIKey, hasLocalAssistantCommand, localAssistantCommandLabel } from "./lib/chatgpt.js";
 import { listWorkspaces, changedWorkspaces, changedFiles } from "./lib/workspaces.js";
@@ -254,6 +255,14 @@ program.command("chat")
     });
   });
 
+const toolkit = program.command("toolkit").description("Inspect Pan's command toolkit");
+toolkit
+  .command("ls")
+  .description("List command aliases available to Pan")
+  .action(listToolkitAliases);
+
+toolkit.action(listToolkitAliases);
+
 program.parseAsync();
 
 function isFailure(step: { result: Awaited<ReturnType<typeof run>> }): step is { result: Extract<Awaited<ReturnType<typeof run>>, { ok: false }> } {
@@ -466,4 +475,19 @@ async function promptYesNo(question: string, defaultYes: boolean) {
 function indent(text: string, spaces = 2) {
   const pad = " ".repeat(spaces);
   return text.split("\n").map(line => (line.length ? pad + line : line)).join("\n");
+}
+
+function listToolkitAliases() {
+  const entries = getToolkitCommands();
+  if (entries.length === 0) {
+    console.log("[pan] No toolkit commands are currently registered.");
+    return;
+  }
+  const aliasWidth = Math.max(4, ...entries.map(entry => entry.alias.length));
+  console.log("[pan] Pan toolkit commands:");
+  for (const entry of entries) {
+    const desc = entry.description ? ` — ${entry.description}` : "";
+    const sourceTag = entry.source === "env" ? " (from environment)" : "";
+    console.log(`[pan] ${entry.alias.padEnd(aliasWidth, " ")} -> ${entry.command}${desc}${sourceTag}`);
+  }
 }

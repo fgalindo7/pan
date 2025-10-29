@@ -4,9 +4,50 @@ import { changedWorkspaces, hasScript, listWorkspaces, workspaceScriptCommand, W
 const testScriptPreference = ["test:ci", "test:coverage", "test", "unit:test", "test:unit"];
 
 /** Lint/type-check/dirty-index orchestration for Pan. */
-export async function lintFix() { return run("yarn lint --fix", "lint --fix"); }
-export async function typeCheck() { return run("yarn type-check", "type-check"); }
-export async function dirtyIndexCheck() { return run("yarn dirty-index-check", "dirty-index-check"); }
+export async function lintFix() {
+  const root = await resolveRootWorkspace();
+  if (!root) return skip("lint --fix", "workspace metadata unavailable");
+
+  if (hasScript(root, "lint:fix")) {
+    const cmd = workspaceScriptCommand(root, "lint:fix");
+    return run(cmd, "lint:fix");
+  }
+
+  if (hasScript(root, "lint")) {
+    const cmd = workspaceScriptCommand(root, "lint");
+    return run(`${cmd} --fix`, "lint --fix");
+  }
+
+  console.log("[pan] ℹ skipping lint --fix (script not found).");
+  return skip("lint --fix", "script not found");
+}
+
+export async function typeCheck() {
+  const root = await resolveRootWorkspace();
+  if (!root) return skip("type-check", "workspace metadata unavailable");
+
+  const script = selectFirstScript(root, ["type-check", "typecheck", "check", "tsc"]);
+  if (!script) {
+    console.log("[pan] ℹ skipping type-check (script not found).");
+    return skip("type-check", "script not found");
+  }
+
+  const cmd = workspaceScriptCommand(root, script);
+  return run(cmd, script);
+}
+
+export async function dirtyIndexCheck() {
+  const root = await resolveRootWorkspace();
+  if (!root) return skip("dirty-index-check", "workspace metadata unavailable");
+
+  if (!hasScript(root, "dirty-index-check")) {
+    console.log("[pan] ℹ skipping dirty-index-check (script not found).");
+    return skip("dirty-index-check", "script not found");
+  }
+
+  const cmd = workspaceScriptCommand(root, "dirty-index-check");
+  return run(cmd, "dirty-index-check");
+}
 
 export async function runRelevantTests(): Promise<boolean> {
   const targets = await changedWorkspaces();
@@ -28,6 +69,22 @@ export async function runPrepushChecks(): Promise<boolean> {
   const t = await typeCheck(); if (!t.ok) return false;
   const tests = await runRelevantTests(); if (!tests) return false;
   const d = await dirtyIndexCheck(); return d.ok;
+}
+
+async function resolveRootWorkspace() {
+  const workspaces = await listWorkspaces();
+  return workspaces.find(ws => ws.isRoot) ?? null;
+}
+
+function selectFirstScript(ws: WorkspaceInfo, candidates: string[]) {
+  for (const name of candidates) {
+    if (hasScript(ws, name)) return name;
+  }
+  return null;
+}
+
+function skip(label: string, reason: string) {
+  return { ok: true, stdout: "", stderr: `skipped: ${reason}`, logFile: "" } as Awaited<ReturnType<typeof run>>;
 }
 
 async function gatherTestCommands(targets: WorkspaceInfo[]) {
@@ -52,12 +109,14 @@ async function gatherTestCommands(targets: WorkspaceInfo[]) {
     const root = workspaces.find(w => w.isRoot);
     if (root) {
       const script = selectTestScript(root);
-      if (script) {
+      if (script && !isPlaceholderTestScript(root, script)) {
         const cmd = workspaceScriptCommand(root, script);
         if (!seen.has(cmd)) {
           seen.add(cmd);
           commands.push({ workspace: root, script, cmd });
         }
+      } else if (script) {
+        console.log("[pan] Skipping root test (placeholder test script).");
       }
     }
   }

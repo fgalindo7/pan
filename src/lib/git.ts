@@ -17,11 +17,27 @@ export async function fetchOrigin() {
   return run("git fetch origin", "git fetch origin");
 }
 
+export async function resolveOriginDefaultRef() {
+  const masterCheck = await run(
+    "git show-ref --verify --quiet refs/remotes/origin/master",
+    "check origin/master",
+    { silence: true }
+  );
+  if (masterCheck.ok) return "origin/master";
+
+  const mainCheck = await run(
+    "git show-ref --verify --quiet refs/remotes/origin/main",
+    "check origin/main",
+    { silence: true }
+  );
+  if (mainCheck.ok) return "origin/main";
+
+  return "origin/master";
+}
+
 export async function rebaseOntoOriginDefault() {
   await fetchOrigin();
-  let onto = "origin/master";
-  const hasMaster = await run("git show-ref --verify --quiet refs/remotes/origin/master", "check origin/master");
-  if (!hasMaster.ok) onto = "origin/main";
+  const onto = await resolveOriginDefaultRef();
   const rb = await run(`git rebase ${onto}`, `git rebase ${onto}`);
   return { onto, ok: rb.ok };
 }
