@@ -36,7 +36,7 @@ npm i -g pan
 
 If you cloned this repo directly and want to run **Pan** locally:
 
-```bash
+```sh
 # 1. Install dependencies
 npm install
 
@@ -49,7 +49,7 @@ npm link
 
 You can now run Pan globally:
 
-```bash
+```sh
 pan --version
 pan diagnose
 pan push
@@ -57,13 +57,13 @@ pan push
 
 To undo the global link later:
 
-```bash
+```sh
 npm unlink -g pan
 ```
 
 Or run it without linking:
 
-```bash
+```sh
 # run directly from source
 npx tsx src/cli.ts push
 # or use the built binary
@@ -76,14 +76,14 @@ npx tsx src/cli.ts push
 
 Homebrew tap is live:
 
-```bash
+```sh
 brew tap pan-cli/pan
 brew install pan
 ```
 
 To upgrade later:
 
-```bash
+```sh
 brew update
 brew upgrade pan
 ```
@@ -96,21 +96,21 @@ brew upgrade pan
 
 #### Debian / Ubuntu (.deb)
 
-```bash
+```sh
 wget https://github.com/pan-cli/pan/releases/latest/download/pan_0.1.0_amd64.deb
 sudo apt install ./pan_0.1.0_amd64.deb
 ```
 
 #### Fedora / RHEL / Amazon Linux (.rpm)
 
-```bash
+```sh
 wget https://github.com/pan-cli/pan/releases/latest/download/pan-0.1.0.x86_64.rpm
 sudo rpm -i pan-0.1.0.x86_64.rpm
 ```
 
 #### Verify
 
-```bash
+```sh
 pan --version
 pan diagnose
 ```
@@ -144,6 +144,24 @@ pan toolkit    # show alias catalog and quick installers (init/install)
 pan help       # detailed usage guide and environment knobs
 
 Add `--verbose` to `diagnose`, `fix`, `prepush`, or `push` to stream command errors inline as they occur.
+
+### 🤖 Automating `pan push`
+
+Pan accepts optional flags so automations can answer the interactive prompts ahead of time:
+
+- `--branch-prefix <prefix>` — pick one of `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, or `style`.
+- `--branch-name <name>` — provide the slug that follows the prefix (Pan sanitizes it for you).
+- `--commit-first-line <subject>` — supply the commit subject when Pan needs to create a commit.
+- `--commit-body <body>` — optional commit body passed as an additional `git commit -m` argument.
+
+Omitted flags fall back to the usual interactive questions, so you can mix scripted and manual flows. Example automation:
+
+```sh
+pan push \
+  --branch-prefix docs \
+  --branch-name agent-guide \
+  --commit-first-line "docs: refresh agent guide" \
+  --commit-body "Explain the new non-interactive flags for future agents."
 ```
 
 Set the environment variable `PAN_DOCKER_DEV_CMD` to a custom remediation command if your monorepo relies on starting local Docker services during the build (optional).
@@ -165,7 +183,7 @@ All remediation commands now live in a single registry (`src/lib/commands.ts`), 
 Set the environment variable `LLM_COMMAND` to any shell command that reads a prompt from STDIN and prints a text suggestion.  
 Examples:
 
-```bash
+```sh
 export LLM_COMMAND="ollama run llama3"
 # or
 export LLM_COMMAND="lmstudio generate --model 'MyLocalModel'"
@@ -187,7 +205,7 @@ Pan prints the shared log paths and echoes the chat transcript (`[pan]`, `[chatg
 
 Example (local LLM via Ollama):
 
-```bash
+```sh
 export PAN_ASSISTANT_MODE=local
 export PAN_LOCAL_LLM_COMMAND="ollama run llama3"
 pan chat

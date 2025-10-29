@@ -39,6 +39,8 @@ export interface CommandContext {
   target?: string;
   autostash?: boolean;
   message?: string;
+  messages?: string[];
+  body?: string;
   ref?: string;
   branch?: string;
   name?: string;
@@ -193,7 +195,17 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     categories: ["git"],
     build: ctx => {
       const message = ctx?.message ?? "chore: prepare for push";
-      const command = ctx?.command ?? `git commit --message ${JSON.stringify(message)}`;
+      const extraMessages: string[] = [];
+      if (Array.isArray(ctx?.messages)) {
+        extraMessages.push(...ctx.messages);
+      } else if (ctx?.body) {
+        extraMessages.push(ctx.body);
+      }
+      const messageArgs = [message, ...extraMessages]
+        .filter(part => typeof part === "string" && part.length)
+        .map(part => `--message ${JSON.stringify(part)}`)
+        .join(" ");
+      const command = ctx?.command ?? `git commit ${messageArgs}`;
       const label = ctx?.label ?? `git commit --message ${message}`;
       return { command, label };
     },

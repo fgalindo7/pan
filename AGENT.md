@@ -17,9 +17,10 @@
 
 ## Agent Best Practices
 
-- **Drive `pan push` with scripted input.** The CLI expects interactive answers (branch confirmations, commit message, instructions). When automating, collect responses in a multiline heredoc/printf and pipe them in: `printf 'y\ncommit subject\ncommit body\n' | pan push`. This keeps the run deterministic and avoids deadlocks while waiting for stdin.
-- **Summarize actions in the prompt.** Before invoking `pan push`, echo the intended high-level plan (e.g., tests run, files touched). The CLI records the prompt in `.repo-doctor/` and surfaces it during verbose mode, making later debugging easier.
-- **Lean on `--verbose` when debugging.** Add `--verbose` to `pan diagnose|fix|prepush|push` to stream raw stdout/stderr and append detailed logs to the failure summary. Without it, Pan prints a concise red summary of the last failing command and the log file path.
+- **Prefer CLI flags to answer prompts.** Provide `--branch-prefix`, `--branch-name`, `--commit-first-line`, and `--commit-body` when running `pan push` so Pan can skip the interactive questions for inputs you already know. Any flag you omit falls back to an interactive prompt, making it easy to mix automated answers with manual confirmations.
+- **Fallback: pipe scripted input.** When you need to answer additional prompts (or are automating against an older Pan release), feed responses with a heredoc/printf: `printf 'y\ncommit subject\ncommit body\n' | pan push`. This keeps the run deterministic and avoids deadlocks while Pan waits for stdin.
+- **Summarize actions in the prompt.** Before invoking `pan push`, echo the intended high-level plan (e.g., tests run, files touched). The CLI records the prompt in `.repo-doctor/` and surfaces it during verbose mode, aiding post-run debugging.
+- **Lean on `--verbose` when debugging.** Add `--verbose` to `pan diagnose|fix|prepush|push` to stream raw stdout/stderr and attach detailed snippets to the failure summary; without it, Pan prints a concise red summary of the last failing command plus its log path.
 - **Respect branch policy upfront.** Ensure the current branch follows `<user>/(feat|fix|docs|ci|perf|refactor|style)/message` before calling `pan push`; automated runs fail fast if the name violates the policy.
 - **Keep the working tree tidy.** Run `git status -sb` prior to invoking Pan so you can stash or commit unrelated changes. `pan push` will auto-stash, but surfacing surprises early avoids conflicts.
 - **Watch the `.repo-doctor` logs.** Each step writes `*.log` artifacts. Tail them when a command exits non-zero; Pan links the most recent failure in its summary.

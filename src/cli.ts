@@ -4,7 +4,7 @@ import { stdin as input, stdout as output } from "node:process";
 import * as fs from "node:fs";
 import path from "node:path";
 import { run, runCommand, summarizeSuccessfulCommands } from "./lib/run.js";
-import { pushFlow } from "./lib/push.js";
+import { pushFlow, validatePushOptions } from "./lib/push.js";
 import { consultChatGPT, logContextFromFile, resetChatGPTSession, getAssistantMode, requiresOpenAIKey, hasLocalAssistantCommand, localAssistantCommandLabel } from "./lib/chatgpt.js";
 import { listWorkspaces, changedWorkspaces, changedFiles } from "./lib/workspaces.js";
 import { currentBranch, worktreeClean } from "./lib/git.js";
@@ -272,11 +272,27 @@ program.command("prepush")
 program.command("push")
   .description("Full policy flow: branch -> rebase -> fix -> checks -> commit -> push")
   .option("--verbose", "Print detailed errors as commands fail")
-  .action(async (options: { verbose?: boolean }) => {
+  .option("--branch-prefix <prefix>", "Set the feature branch prefix (ci/docs/feat/…) without prompting")
+  .option("--branch-name <name>", "Set the feature branch slug (e.g. fix-build) without prompting")
+  .option("--commit-first-line <subject>", "Provide the commit subject when Pan needs to commit staged changes")
+  .option("--commit-body <body>", "Provide the commit body when Pan needs to commit staged changes")
+  .action(async (options: {
+    verbose?: boolean;
+    branchPrefix?: string;
+    branchName?: string;
+    commitFirstLine?: string;
+    commitBody?: string;
+  }) => {
     setVerboseLogging(Boolean(options?.verbose));
     clearLastCommandFailure();
     try {
-      await pushFlow();
+      const pushOptions = validatePushOptions({
+        branchPrefix: options.branchPrefix,
+        branchName: options.branchName,
+        commitFirstLine: options.commitFirstLine,
+        commitBody: options.commitBody,
+      });
+      await pushFlow(pushOptions);
     } catch (e: any) {
       const message = typeof e?.message === "string" && e.message ? e.message : "pan push failed";
       printLastFailureSummary({ reason: message });
@@ -484,6 +500,8 @@ pan prepush
 pan push
   Handle feature branch enforcement, stash + rebase, smart build fix, pre-push
   checks, commit prompt, dirty-index policing, and push to origin.
+  Flags: --branch-prefix, --branch-name, --commit-first-line, --commit-body
+  let automations skip interactive prompts when answers are pre-supplied.
 
 pan toolkit
   List Pan's remediation aliases and show setup options.
