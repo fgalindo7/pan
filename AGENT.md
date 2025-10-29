@@ -17,6 +17,7 @@
 
 ## Agent Best Practices
 
+- **Use an answers file for deterministic runs.** Create `pan push --answers pan-push.answers.yaml` files with `push.branch.prefix`, `push.branch.name`, `push.commit.firstLine`, and `push.commit.body` fields. Values in the file take priority over CLI flags, letting you check in reusable automation scripts.
 - **Prefer CLI flags to answer prompts.** Provide `--branch-prefix`, `--branch-name`, `--commit-first-line`, and `--commit-body` when running `pan push` so Pan can skip the interactive questions for inputs you already know. Any flag you omit falls back to an interactive prompt, making it easy to mix automated answers with manual confirmations.
 - **Fallback: pipe scripted input.** When you need to answer additional prompts (or are automating against an older Pan release), feed responses with a heredoc/printf: `printf 'y\ncommit subject\ncommit body\n' | pan push`. This keeps the run deterministic and avoids deadlocks while Pan waits for stdin.
 - **Summarize actions in the prompt.** Before invoking `pan push`, echo the intended high-level plan (e.g., tests run, files touched). The CLI records the prompt in `.repo-doctor/` and surfaces it during verbose mode, aiding post-run debugging.

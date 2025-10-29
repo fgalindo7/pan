@@ -4,7 +4,8 @@ import { stdin as input, stdout as output } from "node:process";
 import * as fs from "node:fs";
 import path from "node:path";
 import { run, runCommand, summarizeSuccessfulCommands } from "./lib/run.js";
-import { pushFlow, validatePushOptions } from "./lib/push.js";
+import { pushFlow, validatePushOptions, type PushOptions } from "./lib/push.js";
+import { loadPushAnswers, type PushAnswersSource } from "./lib/answers.js";
 import { consultChatGPT, logContextFromFile, resetChatGPTSession, getAssistantMode, requiresOpenAIKey, hasLocalAssistantCommand, localAssistantCommandLabel } from "./lib/chatgpt.js";
 import { listWorkspaces, changedWorkspaces, changedFiles } from "./lib/workspaces.js";
 import { currentBranch, worktreeClean } from "./lib/git.js";
@@ -276,22 +277,32 @@ program.command("push")
   .option("--branch-name <name>", "Set the feature branch slug (e.g. fix-build) without prompting")
   .option("--commit-first-line <subject>", "Provide the commit subject when Pan needs to commit staged changes")
   .option("--commit-body <body>", "Provide the commit body when Pan needs to commit staged changes")
+  .option("--answers <file>", "Load push answers from a JSON or YAML file (takes priority over flags)")
   .action(async (options: {
     verbose?: boolean;
     branchPrefix?: string;
     branchName?: string;
     commitFirstLine?: string;
     commitBody?: string;
+    answers?: string;
   }) => {
     setVerboseLogging(Boolean(options?.verbose));
     clearLastCommandFailure();
     try {
-      const pushOptions = validatePushOptions({
-        branchPrefix: options.branchPrefix,
-        branchName: options.branchName,
-        commitFirstLine: options.commitFirstLine,
-        commitBody: options.commitBody,
-      });
+      let answers: PushAnswersSource | null = null;
+      if (options.answers) {
+        answers = await loadPushAnswers(options.answers);
+        console.log(`[pan] Loaded push answers from ${answers.sourcePath}`);
+      }
+
+      const combined: PushOptions = {
+        branchPrefix: answers?.branchPrefix ?? options.branchPrefix,
+        branchName: answers?.branchName ?? options.branchName,
+        commitFirstLine: answers?.commitFirstLine ?? options.commitFirstLine,
+        commitBody: answers?.commitBody ?? options.commitBody,
+      };
+
+      const pushOptions = validatePushOptions(combined);
       await pushFlow(pushOptions);
     } catch (e: any) {
       const message = typeof e?.message === "string" && e.message ? e.message : "pan push failed";
@@ -500,13 +511,14 @@ pan prepush
 pan push
   Handle feature branch enforcement, stash + rebase, smart build fix, pre-push
   checks, commit prompt, dirty-index policing, and push to origin.
-  Flags: --branch-prefix, --branch-name, --commit-first-line, --commit-body
-  let automations skip interactive prompts when answers are pre-supplied.
+  Flags: --answers (JSON/YAML), --branch-prefix, --branch-name,
+  --commit-first-line, --commit-body let automations skip prompts when answers
+  are pre-supplied (file values take priority, flags fill gaps).
 
 pan toolkit
   List Pan's remediation aliases and show setup options.
-  Option 3 (preferred): run "pan toolkit install" to append them to your shell profile.
-  Option 1: run 'eval "$(pan toolkit init)"' to enable aliases for the current shell.
+  Option A (preferred): run "pan toolkit install" to append them to your shell profile.
+  Option B: run 'eval "$(pan toolkit init)"' to enable aliases for the current shell.
 
 pan toolkit init
   Print the alias definitions so you can eval or redirect them into a profile.
