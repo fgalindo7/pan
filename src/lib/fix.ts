@@ -3,7 +3,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { run, addCommandRecorder, type CommandRecord } from "./run.js";
-import { resolveOriginDefaultRef } from "./git.js";
+import { resolveOriginDefaultRef, getBranchStatus, type BranchStatus } from "./git.js";
 import { FFYC_COMMAND } from "./toolkit.js";
 import { consultChatGPT, logContextFromFile } from "./chatgpt.js";
 import { changedWorkspaces, findScriptsByKeywords, hasScript, listWorkspaces, workspaceScriptCommand, WorkspaceInfo } from "./workspaces.js";
@@ -392,16 +392,8 @@ function humanJoin(items: string[]) {
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
-interface BranchStatusInfo {
-  name: string;
-  upstream?: string;
-  ahead: number;
-  behind: number;
-  detached: boolean;
-}
-
 interface RebaseDiagnostics {
-  branchStatus: BranchStatusInfo;
+  branchStatus: BranchStatus;
   head: string;
   rebaseInProgress: boolean;
   autoAborted: boolean;
@@ -468,8 +460,12 @@ async function gatherRebaseDiagnostics(): Promise<RebaseDiagnostics> {
   const rebaseApply = path.join(gitDir, "rebase-apply");
   const rebaseInProgress = fs.existsSync(rebaseMerge) || fs.existsSync(rebaseApply);
 
-  const statusRes = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch", { silence: true });
-  const branchStatus = parseBranchStatus(statusRes.ok ? statusRes.stdout : "");
+  const branchStatus: BranchStatus = (await getBranchStatus()) ?? {
+    name: "",
+    ahead: 0,
+    behind: 0,
+    detached: false,
+  };
 
   const headRes = await run("git rev-parse --short HEAD", "git rev-parse --short HEAD", { silence: true });
   const head = headRes.ok ? headRes.stdout.trim() : "";
@@ -480,9 +476,8 @@ async function gatherRebaseDiagnostics(): Promise<RebaseDiagnostics> {
     if (abortRes.ok) {
       autoAborted = true;
       console.log("[pan] Priority remediation: auto-aborted git rebase to restore your worktree.");
-      const postStatus = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch (post-abort)", { silence: true });
-      if (postStatus.ok) {
-        const updated = parseBranchStatus(postStatus.stdout);
+      const updated = await getBranchStatus();
+      if (updated) {
         branchStatus.name = updated.name || branchStatus.name;
         branchStatus.upstream = updated.upstream ?? branchStatus.upstream;
         branchStatus.ahead = updated.ahead;
@@ -493,36 +488,6 @@ async function gatherRebaseDiagnostics(): Promise<RebaseDiagnostics> {
   }
 
   return { branchStatus, head, rebaseInProgress, autoAborted };
-}
-
-function parseBranchStatus(output: string): BranchStatusInfo {
-  const info: BranchStatusInfo = { name: "", ahead: 0, behind: 0, detached: false };
-  if (!output) return info;
-  for (const line of output.split("\n")) {
-    if (!line.startsWith("#")) continue;
-    const trimmed = line.slice(2).trim();
-    const match = trimmed.match(/^branch\.(\w+)\s+(.*)$/);
-    if (!match) continue;
-    const [, key, rawValue] = match;
-    const value = rawValue.trim();
-    if (key === "head") {
-      info.name = value;
-      if (value === "(detached)" || value.startsWith("(detached")) info.detached = true;
-    } else if (key === "upstream") {
-      info.upstream = value;
-    } else if (key === "ab") {
-      const [aheadRaw, behindRaw] = value.split(" ");
-      if (aheadRaw) info.ahead = parseAheadBehindValue(aheadRaw, "+");
-      if (behindRaw) info.behind = parseAheadBehindValue(behindRaw, "-");
-    }
-  }
-  return info;
-}
-
-function parseAheadBehindValue(value: string, prefix: "+" | "-"): number {
-  const normalized = value.startsWith(prefix) ? value.slice(1) : value;
-  const parsed = Number.parseInt(normalized, 10);
-  return Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
 }
 
 function collectScripts(targets: WorkspaceInfo[], keywords: string[], all: WorkspaceInfo[]) {

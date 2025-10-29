@@ -35,6 +35,20 @@ export async function resolveOriginDefaultRef() {
   return "origin/master";
 }
 
+export interface BranchStatus {
+  name: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+}
+
+export async function getBranchStatus(): Promise<BranchStatus | null> {
+  const res = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch", { silence: true });
+  if (!res.ok) return null;
+  return parseBranchStatus(res.stdout);
+}
+
 export async function rebaseOntoOriginDefault() {
   await fetchOrigin();
   const onto = await resolveOriginDefaultRef();
@@ -56,4 +70,34 @@ export async function commit(msg: string) {
 
 export async function pushSetUpstream(branch: string) {
   return run(`git push -u origin ${branch}`, `git push -u origin ${branch}`);
+}
+
+function parseBranchStatus(output: string): BranchStatus {
+  const info: BranchStatus = { name: "", ahead: 0, behind: 0, detached: false };
+  if (!output) return info;
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("#")) continue;
+    const trimmed = line.slice(2).trim();
+    const match = trimmed.match(/^branch\.(\w+)\s+(.*)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    const value = rawValue.trim();
+    if (key === "head") {
+      info.name = value;
+      if (value === "(detached)" || value.startsWith("(detached")) info.detached = true;
+    } else if (key === "upstream") {
+      info.upstream = value;
+    } else if (key === "ab") {
+      const [aheadRaw, behindRaw] = value.split(" ");
+      if (aheadRaw) info.ahead = parseAheadBehindValue(aheadRaw, "+");
+      if (behindRaw) info.behind = parseAheadBehindValue(behindRaw, "-");
+    }
+  }
+  return info;
+}
+
+function parseAheadBehindValue(value: string, prefix: "+" | "-"): number {
+  const normalized = value.startsWith(prefix) ? value.slice(1) : value;
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
 }
