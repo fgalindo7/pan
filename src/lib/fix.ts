@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { run } from "./run.js";
@@ -180,7 +182,8 @@ async function attemptPriorityRemediation(root: WorkspaceInfo | null): Promise<P
   const rebaseRes = await run("git rebase --autostash origin/master", "git rebase origin/master");
   if (!rebaseRes.ok) {
     console.log("[pan] Priority remediation: git rebase origin/master failed — manual resolution required.");
-    return { status: "blocked", message: "git rebase origin/master failed. Resolve conflicts then rerun Pan." };
+    const message = await explainRebaseFailure();
+    return { status: "blocked", message };
   }
 
   const steps = priorityCommandSteps(root);
@@ -352,6 +355,129 @@ function humanJoin(items: string[]) {
   if (items.length === 1) return items[0];
   if (items.length === 2) return `${items[0]} and ${items[1]}`;
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+}
+
+interface BranchStatusInfo {
+  name: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+}
+
+interface RebaseDiagnostics {
+  branchStatus: BranchStatusInfo;
+  head: string;
+  rebaseInProgress: boolean;
+  autoAborted: boolean;
+}
+
+async function explainRebaseFailure() {
+  const diagnostics = await gatherRebaseDiagnostics();
+  const { branchStatus, head, rebaseInProgress, autoAborted } = diagnostics;
+  const branchLabel = branchStatus.name && branchStatus.name !== "(detached)" ? branchStatus.name : "your branch";
+  const upstreamLabel = branchStatus.upstream || "its upstream";
+
+  const lines: string[] = [
+    "git rebase origin/master failed, so Pan paused automated remediation to avoid corrupting your branch history.",
+  ];
+
+  if (branchStatus.detached && head) {
+    lines.push(`HEAD ended up detached at ${head}.`);
+  }
+
+  if (branchStatus.ahead > 0 && branchStatus.behind > 0) {
+    lines.push(`Local ${branchLabel} and ${upstreamLabel} have diverged (+${branchStatus.ahead}/-${branchStatus.behind}). Both sides contain commits the other does not (common after a force-push).`);
+  } else if (branchStatus.ahead > 0) {
+    lines.push(`Local ${branchLabel} is ahead of ${upstreamLabel} by ${branchStatus.ahead} commit${branchStatus.ahead === 1 ? "" : "s"}.`);
+  } else if (branchStatus.behind > 0) {
+    lines.push(`${branchLabel} is behind ${upstreamLabel} by ${branchStatus.behind} commit${branchStatus.behind === 1 ? "" : "s"}.`);
+  }
+
+  if (autoAborted) {
+    lines.push("Pan detected the in-progress rebase and ran `git rebase --abort` to return you to a safe state.");
+  } else if (rebaseInProgress) {
+    lines.push("A Git rebase is still in progress. Abort it before rerunning Pan.");
+  }
+
+  const suggestions: string[] = [];
+  if (rebaseInProgress && !autoAborted) {
+    suggestions.push("- Run `git rebase --abort` to exit the half-applied rebase.");
+  }
+
+  if (branchStatus.upstream) {
+    const upstream = branchStatus.upstream;
+    suggestions.push(`- Decide how to reconcile ${branchLabel} with ${upstream}. If you want the remote history, run \`git fetch origin && git reset --hard ${upstream}\`. If you need your local commits, create a backup branch and replay them after syncing with ${upstream}.`);
+  } else {
+    suggestions.push("- Reconcile your branch with the remote history, then rerun `pan fix`.");
+  }
+
+  suggestions.push("- After the branch history is settled, rerun `pan fix` to continue remediation.");
+
+  return `${lines.join(" ")}\n${suggestions.join("\n")}`;
+}
+
+async function gatherRebaseDiagnostics(): Promise<RebaseDiagnostics> {
+  const gitDir = process.env.GIT_DIR || ".git";
+  const rebaseMerge = path.join(gitDir, "rebase-merge");
+  const rebaseApply = path.join(gitDir, "rebase-apply");
+  const rebaseInProgress = fs.existsSync(rebaseMerge) || fs.existsSync(rebaseApply);
+
+  const statusRes = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch", { silence: true });
+  const branchStatus = parseBranchStatus(statusRes.ok ? statusRes.stdout : "");
+
+  const headRes = await run("git rev-parse --short HEAD", "git rev-parse --short HEAD", { silence: true });
+  const head = headRes.ok ? headRes.stdout.trim() : "";
+
+  let autoAborted = false;
+  if (rebaseInProgress) {
+    const abortRes = await run("git rebase --abort", "git rebase --abort", { silence: true });
+    if (abortRes.ok) {
+      autoAborted = true;
+      console.log("[pan] Priority remediation: auto-aborted git rebase to restore your worktree.");
+      const postStatus = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch (post-abort)", { silence: true });
+      if (postStatus.ok) {
+        const updated = parseBranchStatus(postStatus.stdout);
+        branchStatus.name = updated.name || branchStatus.name;
+        branchStatus.upstream = updated.upstream ?? branchStatus.upstream;
+        branchStatus.ahead = updated.ahead;
+        branchStatus.behind = updated.behind;
+        branchStatus.detached = updated.detached;
+      }
+    }
+  }
+
+  return { branchStatus, head, rebaseInProgress, autoAborted };
+}
+
+function parseBranchStatus(output: string): BranchStatusInfo {
+  const info: BranchStatusInfo = { name: "", ahead: 0, behind: 0, detached: false };
+  if (!output) return info;
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("#")) continue;
+    const trimmed = line.slice(2).trim();
+    const match = trimmed.match(/^branch\.(\w+)\s+(.*)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    const value = rawValue.trim();
+    if (key === "head") {
+      info.name = value;
+      if (value === "(detached)" || value.startsWith("(detached")) info.detached = true;
+    } else if (key === "upstream") {
+      info.upstream = value;
+    } else if (key === "ab") {
+      const [aheadRaw, behindRaw] = value.split(" ");
+      if (aheadRaw) info.ahead = parseAheadBehindValue(aheadRaw, "+");
+      if (behindRaw) info.behind = parseAheadBehindValue(behindRaw, "-");
+    }
+  }
+  return info;
+}
+
+function parseAheadBehindValue(value: string, prefix: "+" | "-"): number {
+  const normalized = value.startsWith(prefix) ? value.slice(1) : value;
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
 }
 
 function collectScripts(targets: WorkspaceInfo[], keywords: string[], all: WorkspaceInfo[]) {

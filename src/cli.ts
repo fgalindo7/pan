@@ -38,6 +38,11 @@ program.command("diagnose")
       console.log(`[pan] Remediation steps: ${fixResult.steps.join(" → ")}`);
     }
     let exitCode = fixResult.ok ? 0 : 1;
+    if (fixResult.blockedMessage) {
+      console.log(`[pan] Smart remediation blocked: ${fixResult.blockedMessage}`);
+      process.exitCode = 1;
+      return;
+    }
 
     const diagnoseConfigs: Array<{ name: string; description: string; candidates: string[] }> = [
       { name: "type-check", description: "type-check", candidates: ["type-check", "typecheck", "check", "tsc"] },

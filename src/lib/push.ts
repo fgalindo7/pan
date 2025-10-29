@@ -45,7 +45,12 @@ export async function pushFlow() {
   console.log("Fixing build (smart)...");
   const buildResult = await smartBuildFix();
   console.log(`[pan] ${buildResult.summary}`);
-  if (buildResult.blockedMessage) throw new Error(buildResult.blockedMessage);
+  if (buildResult.blockedMessage) {
+    for (const step of buildResult.steps) {
+      console.log(`[pan] ▸ ${step}`);
+    }
+    throw new Error(buildResult.blockedMessage);
+  }
   if (!buildResult.ok) console.log("Build still failing — continuing with remediation checks.");
 
   console.log("Running pre-push checks...");
@@ -54,7 +59,12 @@ export async function pushFlow() {
     console.log("Checks failing. Trying additional remediation (deep build fix)...");
     const retryResult = await smartBuildFix();
     console.log(`[pan] ${retryResult.summary}`);
-    if (retryResult.blockedMessage) throw new Error(retryResult.blockedMessage);
+    if (retryResult.blockedMessage) {
+      for (const step of retryResult.steps) {
+        console.log(`[pan] ▸ ${step}`);
+      }
+      throw new Error(retryResult.blockedMessage);
+    }
     checksOK = await runPrepushChecks();
     if (!checksOK) throw new Error("Pre-push checks still failing.");
   }
