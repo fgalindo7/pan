@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
     "build": "tsup src/cli.ts --out-dir dist --format cjs,esm --dts",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
@@ -24,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.9.1",
+    "vitest": "^2.1.0",
     "tsup": "^8.5.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
