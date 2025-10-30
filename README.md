@@ -14,9 +14,9 @@
 
 In Greek mythology, **Pan** is the **son of Hermes** (messenger god). Pan is a **shepherd** who brings order to scattered flocks and a musician who creates **harmony** from many pipes. Your monorepo is a wild landscape; Pan guides it from **panic** to push—shepherding packages, harmonizing builds and checks, and safely delivering (pushing) changes.
 
-## 🧰 Installation
+## Installation
 
-### 🛠️ Summary
+### Summary
 
 | Platform | Install Command |
 |-----------|-----------------|
@@ -132,7 +132,7 @@ pan diagnose
 
 ---
 
-## 🚀 Usage
+## Usage
 
 ```sh
 pan push       # full policy flow: branch → rebase → fix → checks → commit → push
@@ -142,6 +142,8 @@ pan prepush    # lint --fix, type-check, targeted tests, dirty-index-check
 pan chat       # contextual LLM session; Pan runs suggested commands with you in loop
 pan toolkit    # show alias catalog and quick installers (init/install)
 pan help       # detailed usage guide and environment knobs
+
+```
 
 Add `--verbose` to `diagnose`, `fix`, `prepush`, or `push` to stream command errors inline as they occur.
 
@@ -187,7 +189,7 @@ Set the environment variable `PAN_DOCKER_DEV_CMD` to a custom remediation comman
 
 Pan inspects `yarn workspaces list`, `git status`, and package.json scripts to determine which builds/tests to run. When a build fails, Pan tries the best repair scripts it can find (e.g., `yarn cache clean`, `npx prisma generate`, workspace `migrate`/`fix:*` scripts) before retrying targeted builds.
 
-### 🧰 Toolkit aliases
+### Toolkit aliases
 
 Pan ships a handful of remediation shortcuts (for example `ycc` → `yarn cache clean` and `yi` → `yarn install`).
 
@@ -197,7 +199,7 @@ Pan ships a handful of remediation shortcuts (for example `ycc` → `yarn cache 
 
 All remediation commands now live in a single registry (`src/lib/commands.ts`), so the same aliases power `pan fix`, `pan push`, the toolkit output, and the recorded command log. Updating the registry automatically updates every flow.
 
-## 🧠 Optional AI Integration
+## 🧠 AI Integration
 
 Set the environment variable `LLM_COMMAND` to any shell command that reads a prompt from STDIN and prints a text suggestion.  
 Examples:
@@ -208,7 +210,7 @@ export LLM_COMMAND="ollama run llama3"
 export LLM_COMMAND="lmstudio generate --model 'MyLocalModel'"
 ```
 
-### 🆘 LLM Escalation (last resort)
+### LLM Escalation (last resort)
 
 When every automated remediation fails, Pan opens a terminal chat with ChatGPT (`gpt-5-codex`) or a local LLM, automatically runs any commands it suggests, and reports the outcome back into the same conversation. You can jump in at any point to add clarifications or stop the loop.
 
@@ -235,6 +237,20 @@ If you leave the command blank when prompted, Pan can bootstrap a Docker-based s
 > Note: When using ChatGPT, Pan relies on OpenAI's authenticated API. There is currently no supported browser-login handoff or device-auth flow for external CLIs, so an API key (or compatible proxy token) is required unless you switch to `PAN_ASSISTANT_MODE=local` with a shell-accessible LLM command.
 
 ---
+
+## Testing
+
+Pan ships with a Vitest suite that exercises both focused units and higher-level push-flow contracts.
+
+- **Quick sweep:** `yarn test` runs the entire suite (unit + service contracts) in a single pass.
+- **Targeted runs:**
+  - `yarn test:unit` limits execution to `tests/unit/**`.
+  - `yarn test:integration` is reserved for future cross-service flows.
+- **Watch mode:** `yarn test:watch` keeps Vitest running while you iterate.
+
+Service-level specs in `tests/service/pushFlow.test.ts` rely on the shared harness in `tests/service/pushHarness.ts`, which mocks shell commands (`run`), Git plumbing, remediation (`smartBuildFix`), and pre-push checks. Reset the harness with `resetPushMockState()` before each scenario to isolate state.
+
+When adding new behaviors to the push workflow, prefer extending the service tests to cover success and failure paths, then layer in unit tests for pure helpers. The harness records dispatched operations, making it easy to assert that Pan staged, committed, pushed, or halted at the right boundaries.
 
 ## 🤝 Contributing
 
