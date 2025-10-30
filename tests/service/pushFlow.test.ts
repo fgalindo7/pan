@@ -66,4 +66,30 @@ describe("pushFlow", () => {
     expect(pushMockState.events).toContain("git:push:" + expectedBranch);
     expect(pushMockState.events).not.toContain("git:push:francisco/chore/legacy");
   });
+
+  it("surfaces blocked remediation failures and aborts the push", async () => {
+    pushMockState.fix.result = {
+      ok: false,
+      summary: "remediation blocked",
+      steps: ["Inspect failing workspace logs", "Re-run pan fix after manual cleanup"],
+      failures: [],
+      attempts: 1,
+      consulted: false,
+      commands: [],
+      blockedMessage: "Fix blocked: manual intervention required.",
+    };
+
+    const options = validatePushOptions({
+      branchPrefix: "feat",
+      branchName: "Blocked Flow",
+      commitFirstLine: "test: cover remediation block",
+    });
+
+    await expect(pushFlow(options)).rejects.toThrow("Fix blocked: manual intervention required.");
+
+    expect(pushMockState.events).toContain("git:createBranch:francisco/feat/blocked-flow");
+    expect(pushMockState.events).toContain("fix:smartBuildFix");
+    expect(pushMockState.events).not.toContain("git:push:francisco/feat/blocked-flow");
+    expect(pushMockState.events.some(event => event.startsWith("git:commit:"))).toBe(false);
+  });
 });
