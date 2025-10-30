@@ -204,4 +204,59 @@ describe("pan push integration", () => {
     const remoteRef = await fixture.remoteGit("show-ref refs/heads/fixture/feat/prompted-branch");
     expect(remoteRef.code).toBe(0);
   }, 30_000);
+
+  it("uses editor flow when PAN_COMMIT_MESSAGE_EDITOR is provided", async () => {
+    const fixture = await createRepoFixture({
+      packageScripts: {
+        build: "node scripts/ok.js build",
+        lint: "node scripts/ok.js lint",
+        "type-check": "node scripts/ok.js type-check",
+        "dirty-index-check": "node scripts/ok.js dirty-index-check",
+      },
+    });
+
+    await fixture.writeFiles({
+      "scripts/ok.js": `#!/usr/bin/env node\nprocess.exit(0);\n`,
+      "notes.md": "# Integration test\n",
+      "scripts/fake-textedit.js": `#!/usr/bin/env node
+const fs = require("node:fs");
+const target = process.argv[process.argv.length - 1];
+fs.writeFileSync(target, "test: editor integration\\n\\nBody from fake editor\\n", "utf8");
+`,
+    });
+
+    await fixture.run(`chmod +x ${JSON.stringify(fixture.path("scripts/fake-textedit.js"))}`);
+
+    const editorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture.path("scripts/fake-textedit.js"))}`;
+
+    const result = await runPan(["push"], {
+      cwd: fixture.dir,
+      env: {
+        USER: "fixture",
+        PAN_CHATGPT_ENABLED: "0",
+        PAN_CHATGPT_CONFIRM: "0",
+        PAN_ASSISTANT_MODE: "openai",
+        PAN_COMMIT_MESSAGE_EDITOR: editorCommand,
+        PAN_COMMIT_MESSAGE_USE_EDITOR: "1",
+      },
+      prompts: [
+        { match: "Branch type", reply: "feat" },
+        { match: "Short branch message", reply: "editor-branch" },
+      ],
+    });
+
+    expect(result.exitCode, `stdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain("Created fixture/feat/editor-branch");
+    expect(result.stdout).toContain("✅ Pushed fixture/feat/editor-branch");
+
+    const status = await fixture.git("status --short --branch");
+    expect(status.stdout).toMatch(/## fixture\/feat\/editor-branch/);
+
+    const commitLog = await fixture.git("log -1 --pretty=%B");
+    expect(commitLog.stdout).toContain("test: editor integration");
+    expect(commitLog.stdout).toContain("Body from fake editor");
+
+    const remoteRef = await fixture.remoteGit("show-ref refs/heads/fixture/feat/editor-branch");
+    expect(remoteRef.code).toBe(0);
+  }, 30_000);
 });
