@@ -5,6 +5,7 @@ import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit,
 import { userName, validFeatureBranch, sanitizeSegment, ALLOWED_PREFIX } from "./policy.js";
 import { smartBuildFix } from "./fix.js";
 import { runPrepushChecks, dirtyIndexCheck, typeCheck, lintFix } from "./checks.js";
+import { createCommitMessageProvider } from "./commitMessageProvider.js";
 
 export interface PushOptions {
   branchPrefix?: string;
@@ -172,27 +173,23 @@ export async function pushFlow(options: NormalizedPushOptions = {}) {
       await stageAll();
       const defMsg = "chore: prepare for push";
       const providedSubject = options.commitFirstLine;
-      const commitBody = options.commitBody;
-
-      let subject = providedSubject ?? "";
-      let rl: readline.Interface | null = null;
-      try {
-        if (!subject) {
-          rl = readline.createInterface({ input, output });
-          subject = (await rl.question(`Commit message [${defMsg}]: `)).trim() || defMsg;
-        }
-      } finally {
-        rl?.close();
-      }
+      const providedBody = options.commitBody;
 
       if (providedSubject) {
         console.log("[pan] Using provided commit first line.");
       }
-      if (commitBody) {
+      if (providedBody) {
         console.log("[pan] Using provided commit body.");
       }
 
-      const c = await commit(subject, commitBody);
+      const commitProvider = createCommitMessageProvider();
+      const { subject, body } = await commitProvider.getCommitMessage({
+        defaultSubject: defMsg,
+        providedSubject,
+        providedBody,
+      });
+
+      const c = await commit(subject, body);
       if (!c.ok) throw new Error("Commit failed");
 
       const dic = await dirtyIndexCheck();
