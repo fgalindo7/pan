@@ -1,9 +1,9 @@
 push:
   branch:
-    prefix: docs
-    name: answers-flag
+    prefix: feat
+    name: test-foundations
   commit:
-    firstLine: "docs: document answers-driven push"
+    firstLine: "test: scaffold vitest harness"
     body: |
-      Document the new --answers automation option in README and AGENT guides.
-      Validated CLI behavior by running pan push with the answers file.
+      Introduce Vitest runner scripts, shared test setup utilities, and baseline unit specs.
+      Locks current behaviors to support upcoming object-oriented refactors.
