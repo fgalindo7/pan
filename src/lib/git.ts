@@ -13,6 +13,11 @@ export async function worktreeClean() {
   return r.ok && r.stdout.trim().length === 0;
 }
 
+export async function getShortStatus() {
+  const r = await run("git status --short", "git status --short", { silence: true });
+  return r.ok ? r.stdout : "";
+}
+
 export async function fetchOrigin() {
   return runCommand("gfo");
 }
@@ -77,6 +82,11 @@ export async function commit(msg: string, body?: string) {
 
 export async function pushSetUpstream(branch: string) {
   return runCommand("gpsup", { branch });
+}
+
+export async function getCachedDiffStat() {
+  const res = await run("git diff --cached --stat", "git diff --cached --stat", { silence: true });
+  return res.ok ? res.stdout : "";
 }
 
 function parseBranchStatus(output: string): BranchStatus {

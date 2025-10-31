@@ -60,12 +60,14 @@ describe("commit message provider", () => {
           };
         });
 
+        const actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
         vi.doMock("node:child_process", () => ({
+          ...actualChildProcess,
           spawn: spawnMock,
         }));
 
-  const { createCommitMessageProvider: getProvider } = await import("../../src/lib/commitMessageProvider.js");
-  const provider = getProvider();
+        const { createCommitMessageProvider: getProvider } = await import("../../src/lib/commitMessageProvider.js");
+        const provider = getProvider();
         const result = await provider.getCommitMessage({ defaultSubject: "default" });
 
         expect(spawnMock).toHaveBeenCalledTimes(1);
@@ -103,8 +105,11 @@ describe("commit message provider", () => {
         }),
       }));
 
-  const { createCommitMessageProvider: getProvider } = await import("../../src/lib/commitMessageProvider.js");
-  const provider = getProvider();
+      const actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      vi.doMock("node:child_process", () => actualChildProcess);
+
+      const { createCommitMessageProvider: getProvider } = await import("../../src/lib/commitMessageProvider.js");
+      const provider = getProvider();
       const result = await provider.getCommitMessage({ defaultSubject: "default" });
       expect(result.subject).toBe("feat: direct");
       expect(questionMock).toHaveBeenCalled();

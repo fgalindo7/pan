@@ -171,6 +171,26 @@ export async function consultChatGPT(ctx: ChatGPTContext) {
   console.log(`[pan] ${assistantLabel} session complete.`);
 }
 
+export async function requestAssistantCompletion(prompt: string, options: { context?: string; system?: string } = {}) {
+  if (!CHATGPT_ENABLED) return "";
+  const mode = getAssistantMode();
+  const apiKey = process.env.PAN_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+  if (mode === "openai" && !apiKey) return "";
+  if (mode === "local" && !hasLocalAssistantCommand()) return "";
+
+  const system = options.system ?? "You are GPT-5 Codex helping craft precise git commit messages and summaries.";
+  const messages: ChatMessage[] = [];
+  if (system) messages.push({ role: "system", content: system });
+  const contextBlock = options.context?.trim();
+  const userContent = contextBlock && contextBlock.length
+    ? `${contextBlock}\n\n${prompt}`
+    : prompt;
+  messages.push({ role: "user", content: userContent });
+
+  const reply = await requestAssistantReply(mode, messages, apiKey);
+  return reply?.trim() ?? "";
+}
+
 export function logContextFromFile(label: string, logFile?: string, maxLines = 80): LogContext {
   if (!logFile) return { label };
   try {
