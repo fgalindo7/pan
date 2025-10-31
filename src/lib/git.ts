@@ -1,4 +1,5 @@
 import { run, runCommand } from "./run.js";
+import { GitBranchStatus, type GitBranchStatusProps } from "../domain/GitBranchStatus.js";
 
 /**
  * Git helpers for Pan.
@@ -40,15 +41,7 @@ export async function resolveOriginDefaultRef() {
   return "origin/master";
 }
 
-export interface BranchStatus {
-  name: string;
-  upstream?: string;
-  ahead: number;
-  behind: number;
-  detached: boolean;
-}
-
-export async function getBranchStatus(): Promise<BranchStatus | null> {
+export async function getBranchStatus(): Promise<GitBranchStatus | null> {
   const res = await run("git status --porcelain=v2 --branch", "git status --porcelain=v2 --branch", { silence: true });
   if (!res.ok) return null;
   return parseBranchStatus(res.stdout);
@@ -89,9 +82,9 @@ export async function getCachedDiffStat() {
   return res.ok ? res.stdout : "";
 }
 
-function parseBranchStatus(output: string): BranchStatus {
-  const info: BranchStatus = { name: "", ahead: 0, behind: 0, detached: false };
-  if (!output) return info;
+function parseBranchStatus(output: string): GitBranchStatus {
+  const props: GitBranchStatusProps = { name: "", ahead: 0, behind: 0, detached: false };
+  if (!output) return new GitBranchStatus(props);
   for (const line of output.split("\n")) {
     if (!line.startsWith("#")) continue;
     const trimmed = line.slice(2).trim();
@@ -100,17 +93,17 @@ function parseBranchStatus(output: string): BranchStatus {
     const [, key, rawValue] = match;
     const value = rawValue.trim();
     if (key === "head") {
-      info.name = value;
-      if (value === "(detached)" || value.startsWith("(detached")) info.detached = true;
+      props.name = value;
+      if (value === "(detached)" || value.startsWith("(detached")) props.detached = true;
     } else if (key === "upstream") {
-      info.upstream = value;
+      props.upstream = value;
     } else if (key === "ab") {
       const [aheadRaw, behindRaw] = value.split(" ");
-      if (aheadRaw) info.ahead = parseAheadBehindValue(aheadRaw, "+");
-      if (behindRaw) info.behind = parseAheadBehindValue(behindRaw, "-");
+      if (aheadRaw) props.ahead = parseAheadBehindValue(aheadRaw, "+");
+      if (behindRaw) props.behind = parseAheadBehindValue(behindRaw, "-");
     }
   }
-  return info;
+  return new GitBranchStatus(props);
 }
 
 function parseAheadBehindValue(value: string, prefix: "+" | "-"): number {

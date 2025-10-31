@@ -1,27 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Workspace } from "../domain/Workspace.js";
 import { runCommand } from "./run.js";
 
-export interface WorkspaceInfo {
-  name: string;
-  location: string;
-  scripts: Record<string, string>;
-  isRoot: boolean;
-}
+let cachedWorkspaces: Workspace[] | null = null;
 
-let cachedWorkspaces: WorkspaceInfo[] | null = null;
-
-export async function listWorkspaces(): Promise<WorkspaceInfo[]> {
+export async function listWorkspaces(): Promise<Workspace[]> {
   if (cachedWorkspaces) return cachedWorkspaces;
-  const workspaces: WorkspaceInfo[] = [];
+
+  const workspaces: Workspace[] = [];
   const rootPkgPath = path.resolve("package.json");
   const rootPkg = readPackageJson(rootPkgPath);
-  workspaces.push({
-    name: rootPkg?.name || "root",
-    location: ".",
-    scripts: rootPkg?.scripts || {},
-    isRoot: true,
-  });
+  workspaces.push(
+    Workspace.create({
+      name: rootPkg?.name || "root",
+      location: ".",
+      scripts: rootPkg?.scripts || {},
+      isRoot: true,
+    })
+  );
 
   const res = await runCommand("ywls");
   if (res.ok && res.stdout) {
@@ -32,29 +29,26 @@ export async function listWorkspaces(): Promise<WorkspaceInfo[]> {
         if (!parsed?.location || !parsed?.name) continue;
         const pkgPath = path.resolve(parsed.location, "package.json");
         const pkgJson = readPackageJson(pkgPath);
-        workspaces.push({
-          name: parsed.name,
-          location: normalizePath(parsed.location),
-          scripts: pkgJson?.scripts || {},
-          isRoot: false,
-        });
+        workspaces.push(
+          Workspace.create({
+            name: parsed.name,
+            location: parsed.location,
+            scripts: pkgJson?.scripts || {},
+            isRoot: false,
+          })
+        );
       } catch {
         continue;
       }
     }
   }
 
-  cachedWorkspaces = workspaces.map(ws => ({ ...ws, location: normalizePath(ws.location) }));
+  cachedWorkspaces = workspaces.map(ws => Workspace.create(ws.toJSON()));
   return cachedWorkspaces;
 }
 
-function readPackageJson(pkgPath: string) {
-  try {
-    const content = fs.readFileSync(pkgPath, "utf8");
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
+export function clearWorkspaceCache() {
+  cachedWorkspaces = null;
 }
 
 export async function changedFiles(): Promise<string[]> {
@@ -75,16 +69,14 @@ export async function changedFiles(): Promise<string[]> {
   return [...new Set(files)];
 }
 
-export async function changedWorkspaces(): Promise<WorkspaceInfo[]> {
+export async function changedWorkspaces(): Promise<Workspace[]> {
   const workspaces = await listWorkspaces();
   const files = await changedFiles();
   if (!files.length) return workspaces.filter(w => w.isRoot);
-  const matches = new Set<WorkspaceInfo>();
+  const matches = new Set<Workspace>();
   for (const file of files) {
     for (const ws of workspaces) {
-      if (ws.isRoot) continue;
-      const wsPrefix = ws.location.endsWith("/") ? ws.location : `${ws.location}/`;
-      if (file.startsWith(wsPrefix)) {
+      if (!ws.isRoot && ws.ownsFile(file)) {
         matches.add(ws);
       }
     }
@@ -92,30 +84,37 @@ export async function changedWorkspaces(): Promise<WorkspaceInfo[]> {
   if (!matches.size) {
     return workspaces.filter(w => w.isRoot);
   }
-  const result = new Set<WorkspaceInfo>([...matches, ...workspaces.filter(w => w.isRoot)]);
+  const result = new Set<Workspace>([...matches, ...workspaces.filter(w => w.isRoot)]);
   return Array.from(result);
 }
 
-export function hasScript(ws: WorkspaceInfo, script: string) {
-  return Boolean(ws.scripts && Object.prototype.hasOwnProperty.call(ws.scripts, script));
+export function hasScript(ws: Workspace, script: string) {
+  return ws.hasScript(script);
 }
 
-export function findScriptsByKeywords(ws: WorkspaceInfo, keywords: string[]) {
-  const scripts: string[] = [];
-  for (const key of Object.keys(ws.scripts || {})) {
-    const lower = key.toLowerCase();
-    if (keywords.some(k => lower.includes(k.toLowerCase()))) scripts.push(key);
+export function findScriptsByKeywords(ws: Workspace, keywords: string[]) {
+  return ws.listScriptsMatching(script => {
+    const lower = script.toLowerCase();
+    return keywords.some(k => lower.includes(k.toLowerCase()));
+  });
+}
+
+export function workspaceScriptCommand(ws: Workspace, script: string) {
+  if (ws.isRoot) return `yarn run ${shellQuote(script)}`;
+  return `yarn workspace ${shellQuote(ws.name)} run ${shellQuote(script)}`;
+}
+
+function readPackageJson(pkgPath: string) {
+  try {
+    const content = fs.readFileSync(pkgPath, "utf8");
+    return JSON.parse(content);
+  } catch {
+    return null;
   }
-  return scripts;
 }
 
 function normalizePath(p: string) {
   return p.replace(/\\/g, "/");
-}
-
-export function workspaceScriptCommand(ws: WorkspaceInfo, script: string) {
-  if (ws.isRoot) return `yarn run ${shellQuote(script)}`;
-  return `yarn workspace ${shellQuote(ws.name)} run ${shellQuote(script)}`;
 }
 
 function shellQuote(v: string) {

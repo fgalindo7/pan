@@ -1,5 +1,6 @@
 import { runCommand } from "./run.js";
-import { changedWorkspaces, hasScript, listWorkspaces, workspaceScriptCommand, WorkspaceInfo } from "./workspaces.js";
+import { changedWorkspaces, hasScript, listWorkspaces, workspaceScriptCommand } from "./workspaces.js";
+import { Workspace } from "../domain/Workspace.js";
 
 const testScriptPreference = ["test:ci", "test:coverage", "test", "unit:test", "test:unit"];
 
@@ -87,7 +88,7 @@ async function resolveRootWorkspace() {
   return workspaces.find(ws => ws.isRoot) ?? null;
 }
 
-function selectFirstScript(ws: WorkspaceInfo, candidates: string[]) {
+function selectFirstScript(ws: Workspace, candidates: string[]) {
   for (const name of candidates) {
     if (hasScript(ws, name)) return name;
   }
@@ -100,8 +101,8 @@ function skip(label: string, reason: string) {
   return { ok: true, stdout: "", stderr: `skipped: ${reason}`, logFile: "" } as RunResult;
 }
 
-async function gatherTestCommands(targets: WorkspaceInfo[]) {
-  const commands: { workspace: WorkspaceInfo; script: string; cmd: string }[] = [];
+async function gatherTestCommands(targets: Workspace[]) {
+  const commands: { workspace: Workspace; script: string; cmd: string }[] = [];
   const seen = new Set<string>();
 
   for (const ws of targets) {
@@ -137,7 +138,7 @@ async function gatherTestCommands(targets: WorkspaceInfo[]) {
   return commands;
 }
 
-function selectTestScript(ws: WorkspaceInfo) {
+function selectTestScript(ws: Workspace) {
   for (const candidate of testScriptPreference) {
     if (hasScript(ws, candidate)) return candidate;
   }
@@ -145,7 +146,7 @@ function selectTestScript(ws: WorkspaceInfo) {
   return fallback || null;
 }
 
-function isPlaceholderTestScript(ws: WorkspaceInfo, script: string) {
+function isPlaceholderTestScript(ws: Workspace, script: string) {
   const body = ws.scripts?.[script];
   if (!body) return false;
   const normalized = body.replace(/\s+/g, " ").toLowerCase();

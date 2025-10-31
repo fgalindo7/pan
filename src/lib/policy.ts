@@ -1,18 +1,22 @@
+import { PushPolicy, DEFAULT_ALLOWED_PREFIXES } from "../domain/PushPolicy.js";
+
 /**
  * Branch naming policy enforcement for Pan.
  */
-export const ALLOWED_PREFIX = ["ci", "docs", "feat", "fix", "perf", "refactor", "style"] as const;
+export const ALLOWED_PREFIX = DEFAULT_ALLOWED_PREFIXES;
+
+const defaultPolicy = new PushPolicy({ allowedPrefixes: ALLOWED_PREFIX });
 
 export function userName(): string {
-  return process.env.USER || process.env.LOGNAME || "dev";
+  return defaultPolicy.resolveUserName();
 }
 
 export function validFeatureBranch(branch: string, user = userName()) {
-  const u = user.replace(/[^a-zA-Z0-9._-]/g, "");
-  const re = new RegExp(`^${u}/(?:${ALLOWED_PREFIX.join("|")})/.+`);
-  return re.test(branch);
+  return defaultPolicy.validFeatureBranch(branch, user);
 }
 
 export function sanitizeSegment(s: string) {
-  return s.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return defaultPolicy.sanitizeSegment(s);
 }
+
+export { PushPolicy };

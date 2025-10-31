@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { requestAssistantCompletion } from "./chatgpt.js";
-import { run } from "./run.js";
+import { PushContext, type CommitMessageContext } from "../domain/PushContext.js";
 
 export interface CommitMessageOptions {
   defaultSubject: string;
@@ -26,18 +26,8 @@ export interface CommitMessageProvider {
   getCommitMessage(options: CommitMessageOptions): Promise<CommitMessageResult>;
 }
 
-export interface CommitMessageContext {
-  branch: string;
-  author?: string;
-  changedFiles?: string[];
-  statusText?: string;
-  diffStat?: string;
-  commandSummary?: string[];
-  additionalNotes?: string;
-}
-
 export async function suggestCommitMessage(context: CommitMessageContext): Promise<CommitMessageResult | null> {
-  const summary = buildAssistantContext(context);
+  const summary = buildAssistantContext(new PushContext(context).toCommitMessageContext());
   const prompt = [
     "Craft a concise Conventional Commits style message summarizing the staged changes.",
     "Return the subject on the first line. If helpful, include an optional body separated by a blank line.",

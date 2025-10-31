@@ -5,8 +5,9 @@ import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit,
 import { userName, validFeatureBranch, sanitizeSegment, ALLOWED_PREFIX } from "./policy.js";
 import { smartBuildFix } from "./fix.js";
 import { runPrepushChecks, dirtyIndexCheck, typeCheck, lintFix } from "./checks.js";
-import { createCommitMessageProvider, suggestCommitMessage, type CommitMessageContext } from "./commitMessageProvider.js";
+import { createCommitMessageProvider, suggestCommitMessage } from "./commitMessageProvider.js";
 import { changedFiles } from "./workspaces.js";
+import { PushContext, type CommitMessageContext } from "../domain/PushContext.js";
 
 export interface PushOptions {
   branchPrefix?: string;
@@ -188,14 +189,16 @@ export async function pushFlow(options: NormalizedPushOptions = {}) {
       const files = await changedFiles();
       const summary = summarizeSuccessfulCommands(commandLog);
 
-      const commitContext: CommitMessageContext = {
+      const pushContext = new PushContext({
         branch: featureBranch,
         author: user,
         changedFiles: files,
         statusText,
         diffStat,
         commandSummary: summary,
-      };
+      });
+
+      const commitContext: CommitMessageContext = pushContext.toCommitMessageContext();
 
       let assistantSuggestion: { subject: string; body?: string } | null = null;
       try {
