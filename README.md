@@ -189,6 +189,16 @@ Set the environment variable `PAN_DOCKER_DEV_CMD` to a custom remediation comman
 
 Pan inspects `yarn workspaces list`, `git status`, and package.json scripts to determine which builds/tests to run. When a build fails, Pan tries the best repair scripts it can find (e.g., `yarn cache clean`, `npx prisma generate`, workspace `migrate`/`fix:*` scripts) before retrying targeted builds.
 
+### 📝 Commit message providers
+
+The push flow settles on one of three commit message sources:
+
+- **Static message** — set `PAN_COMMIT_MESSAGE_TEXT="subject\\n\\nbody"` to short-circuit the prompt/editor entirely (helpful for CI or scripted pushes).
+- **Editor flow** — Pan launches an editor when running on macOS or whenever `PAN_COMMIT_MESSAGE_EDITOR` or `PAN_COMMIT_MESSAGE_USE_EDITOR=1` is present. On macOS the default command is `open -W -a TextEdit <file>`; override it with any executable (for example a small Node script) via `PAN_COMMIT_MESSAGE_EDITOR`.
+- **Interactive prompt** — the fallback everywhere else, or when `PAN_NO_COMMIT_EDITOR=1` is set.
+
+All modes accept `--commit-first-line` / `--commit-body` flags; provided values win over templates. The editor template mirrors Git’s `COMMIT_EDITMSG` format (subject line, blank line, body, then a short reminder block), and comment lines beginning with `#` are stripped before committing.
+
 ### Toolkit aliases
 
 Pan ships a handful of remediation shortcuts (for example `ycc` → `yarn cache clean` and `yi` → `yarn install`).
@@ -245,10 +255,12 @@ Pan ships with a Vitest suite that exercises both focused units and higher-level
 - **Quick sweep:** `yarn test` runs the entire suite (unit + service contracts) in a single pass.
 - **Targeted runs:**
   - `yarn test:unit` limits execution to `tests/unit/**`.
-  - `yarn test:integration` is reserved for future cross-service flows.
+  - `yarn test:integration` drives the end-to-end push harness, including macOS TextEdit simulations and prompt automation.
 - **Watch mode:** `yarn test:watch` keeps Vitest running while you iterate.
 
 Service-level specs in `tests/service/pushFlow.test.ts` rely on the shared harness in `tests/service/pushHarness.ts`, which mocks shell commands (`run`), Git plumbing, remediation (`smartBuildFix`), and pre-push checks. Reset the harness with `resetPushMockState()` before each scenario to isolate state.
+
+Integration specs in `tests/integration/panPushNonInteractive.test.ts` spawn the real CLI with a temp Git repository. The harness listens for prompt text and feeds replies as soon as they appear, making the tests deterministic without sleep-based timers. To exercise the editor path in CI, the suite points `PAN_COMMIT_MESSAGE_EDITOR` at a tiny Node script that writes the commit message to the temp file—no macOS GUI required.
 
 When adding new behaviors to the push workflow, prefer extending the service tests to cover success and failure paths, then layer in unit tests for pure helpers. The harness records dispatched operations, making it easy to assert that Pan staged, committed, pushed, or halted at the right boundaries.
 
