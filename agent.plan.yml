@@ -1,0 +1,299 @@
+version: 1
+name: Pan Refactor Plan
+description: Machine-readable tracker for refactoring Pan into a layered OOP architecture while preserving CLI behavior.
+
+meta:
+  owners: [core-pan]
+  repo_paths:
+    agent_md: AGENT.md
+    plan: agent.plan.yaml
+  invariants:
+    - "External CLI behavior (UX, prompts, logs) MUST NOT change unless explicitly flagged."
+    - "Refactor incrementally: one concern per branch/PR."
+    - "All steps guarded by tests and behavior snapshots."
+  default_branch: master
+
+variables:
+  node_version: ">=18"
+  pkg_manager: yarn
+  mac_editor: TextEdit
+  commit_rules:
+    subject_max: 50
+    body_wrap: 72
+  llm:
+    provider: openai_or_local
+    requires_api_key: true
+    context_fields:
+      - stdout
+      - stderr
+      - exit_code
+      - attempted_commands
+      - workspace_metadata
+      - policies
+      - environment
+    output_style: "concise, complete, poetic"
+    prompt_template_file: ".pan/prompts/failure_explainer.md"
+  behavior_lock:
+    snapshot_command: "pnpm -s run pan:snapshot || yarn -s run pan:snapshot || npm run -s pan:snapshot"
+    compare_command: "pnpm -s run pan:compare || yarn -s run pan:compare || npm run -s pan:compare"
+
+automation:
+  hooks:
+    on_failure:
+      - name: explain_failure_via_llm
+        run: |
+          pan llm:explain \
+            --stdin-json '
+              { "stdout": "$STDOUT",
+                "stderr": "$STDERR",
+                "exit_code": "$EXIT",
+                "attempted_commands": $COMMANDS,
+                "toolkit": $TOOLKIT,
+                "policies": $POLICIES,
+                "env": $ENV
+              }'
+        expects: "poetic root-cause and next steps"
+    pre_commit:
+      - name: open_multiline_commit_editor
+        run: pan commit:edit --editor macos-textedit --rule "50/72"
+      - name: enforce_commit_rules
+        run: pan commit:lint --subject-max 50 --body-wrap 72
+    prepush:
+      - name: ensure_install
+        run: pan ensure:install
+      - name: run_prepush
+        run: pan prepush --verbose=false
+    post_push:
+      - name: behavior_compare
+        run: ${variables.behavior_lock.compare_command}
+
+policies:
+  yarn_install_recovery:
+    detection_patterns:
+      - "Couldn't find the node_modules state file"
+      - "findPackageLocation"
+    action:
+      - run: "yarn install --immutable || yarn install"
+      - retry: "yarn run lint --fix"
+  commit_message_editor:
+    platform: macos
+    editor: ${variables.mac_editor}
+    lifecycle:
+      - create_temp_file
+      - open_editor_plain_text
+      - enforce_5072_in_ui
+      - on_save_close: use_message_then_delete_file
+  piping_multiline_to_pan_push:
+    doc_update_targets:
+      - "AGENT.md"
+    directive: |
+      Agents that generate commits MUST pipe multiline messages to `pan push`:
+        printf "%s\n\n%s\n" "$SUBJECT" "$BODY" | pan push --commit-message-from-stdin
+
+checks:
+  - id: behavior-snapshots-exist
+    run: ${variables.behavior_lock.snapshot_command}
+    asserts:
+      - file_exists: ".pan/snapshots/push.txt"
+      - file_exists: ".pan/snapshots/prepush.txt"
+  - id: ci-vitest
+    run: "yarn test --reporter=verbose"
+  - id: lint
+    run: "yarn lint"
+  - id: typecheck
+    run: "yarn typecheck || yarn tsc -p ."
+  - id: e2e-cli
+    run: "yarn test:integration"
+
+artifacts:
+  - path: ".pan/snapshots/**"
+    description: CLI behavior snapshots
+  - path: "coverage/**"
+    description: Test coverage
+  - path: "tests/fixtures/**"
+    description: Repo fixtures
+
+phases:
+  - id: feat-test-foundations
+    branch: feat/test-foundations
+    goal: Establish test runner and unit specs for stable modules.
+    tasks:
+      - { id: add-vitest, cmd: "yarn add -D vitest @types/node", done: false }
+      - { id: config-vitest, cmd: "touch vitest.config.ts && echo '// config' > vitest.config.ts", done: false }
+      - { id: global-setup, cmd: "mkdir -p tests && echo '// setup' > tests/setup.ts", done: false }
+      - { id: unit-policy-answers-commands, cmd: "yarn test -t policy && yarn test -t answers && yarn test -t commands", done: false }
+    success_criteria:
+      - "All unit tests pass locally and in CI."
+      - "Snapshots of current CLI behavior stored."
+    gates:
+      - check: behavior-snapshots-exist
+      - check: ci-vitest
+      - check: lint
+
+  - id: feat-test-push-contracts
+    branch: feat/test-push-contracts
+    goal: Lock push workflow agreements with a service harness.
+    tasks:
+      - { id: add-mock-shell, cmd: "add tests/support/mockShell.ts", done: false }
+      - { id: add-stub-git, cmd: "add tests/support/stubGit.ts", done: false }
+      - { id: push-service-facade, cmd: "add tests/support/pushServiceFacade.ts", done: false }
+      - { id: contract-tests, cmd: "yarn test -t 'push contracts'", done: false }
+    success_criteria:
+      - "Command sequences and prompts asserted by snapshots."
+    gates:
+      - check: ci-vitest
+
+  - id: feat-test-cli-integration
+    branch: feat/test-cli-integration
+    goal: Golden-path E2E for `pan push`.
+    tasks:
+      - { id: fixture-builder, cmd: "add tests/support/fixtureBuilder.ts", done: false }
+      - { id: e2e-noninteractive, cmd: "yarn test:integration -t 'push non-interactive'", done: false }
+      - { id: e2e-prompt-driven, cmd: "yarn test:integration -t 'push prompt-driven'", done: false }
+    gates:
+      - check: e2e-cli
+
+  - id: refactor-infrastructure-services
+    branch: refactor/infrastructure-services
+    goal: Introduce Shell, Alias, and Logging services without behavior changes.
+    tasks:
+      - { id: create-shell-executor, cmd: "src/infrastructure/ShellCommandExecutor.ts", done: true }
+      - { id: create-alias-registry, cmd: "src/infrastructure/CommandAliasRegistry.ts", done: true }
+      - { id: create-logging-service, cmd: "src/infrastructure/LoggingService.ts", done: true }
+      - { id: replace-procedural-calls, cmd: "sed -i '' 's/run(/shell.run(/g' src/**/*.ts", done: true }
+    success_criteria:
+      - "All tests green; CLI outputs unchanged."
+    gates:
+      - check: behavior-snapshots-exist
+      - check: ci-vitest
+      - check: lint
+      - check: typecheck
+
+  - id: refactor-domain-objects
+    branch: refactor/domain-objects
+    goal: Extract pure domain entities.
+    tasks:
+      - { id: workspace-entity, cmd: "src/domain/Workspace.ts", done: true }
+      - { id: push-policy, cmd: "src/domain/PushPolicy.ts", done: true }
+      - { id: push-context, cmd: "src/domain/PushContext.ts", done: true }
+      - { id: git-branch-status, cmd: "src/domain/GitBranchStatus.ts", done: true }
+      - { id: remediation-strategy, cmd: "src/domain/RemediationStrategy.ts", done: true }
+    gates:
+      - check: ci-vitest
+      - check: typecheck
+
+  - id: refactor-application-coordinators
+    branch: refactor/application-coordinators
+    goal: Move orchestration into coordinators.
+    tasks:
+      - { id: push-coordinator, cmd: "src/application/PushCoordinator.ts", done: false }
+      - { id: diagnose-coordinator, cmd: "src/application/DiagnoseCoordinator.ts", done: false }
+      - { id: fix-coordinator, cmd: "src/application/FixCoordinator.ts", done: false }
+    gates:
+      - check: ci-vitest
+      - check: e2e-cli
+
+  - id: refactor-cli-commands
+    branch: refactor/cli-commands
+    goal: Introduce CLI command classes and OptionParser.
+    tasks:
+      - { id: pan-cli, cmd: "src/cli/PanCLI.ts", done: false }
+      - { id: pan-command-base, cmd: "src/cli/PanCommand.ts", done: false }
+      - { id: concrete-commands, cmd: "src/cli/commands/{Push,Prepush,Diagnose,Fix,Toolkit,Chat,Help}.ts", done: false }
+      - { id: option-parser, cmd: "src/cli/OptionParser.ts", done: false }
+    gates:
+      - check: e2e-cli
+
+  - id: refactor-chat-toolkit-services
+    branch: refactor/chat-toolkit-services
+    goal: Extract ChatSessionService, ChatGateway, ToolkitService.
+    tasks:
+      - { id: chat-session-service, cmd: "src/services/ChatSessionService.ts", done: false }
+      - { id: chat-gateway, cmd: "src/infrastructure/ChatGateway.ts", done: false }
+      - { id: toolkit-service, cmd: "src/services/ToolkitService.ts", done: false }
+      - { id: agent_md_update_pipe, cmd: "Update AGENT.md with multiline pipe instructions", done: false }
+    gates:
+      - check: ci-vitest
+
+  - id: refactor-state-cleanup-tests
+    branch: refactor/state-cleanup-tests
+    goal: Remove globals; ensure instance-scoped state and broaden tests.
+    tasks:
+      - { id: replace-caches, cmd: "refactor caches to instance state", done: false }
+      - { id: expand-tests, cmd: "add tests for class-based state", done: false }
+    gates:
+      - check: ci-vitest
+      - check: e2e-cli
+      - check: behavior-snapshots-exist
+
+  - id: refactor-docs-architecture
+    branch: refactor/docs-architecture
+    goal: Document final architecture and migration steps.
+    tasks:
+      - { id: readme-update, cmd: "Update README.md", done: false }
+      - { id: architecture-doc, cmd: "Add docs/architecture.md", done: false }
+      - { id: finalize-agent-md, cmd: "Refresh AGENT.md with latest class map", done: false }
+    gates:
+      - check: lint
+
+ci_guidance:
+  status_file: .pan/status.json
+  write_progress_on:
+    - after_successful_phase_gate
+    - after_merge_to_default
+  require_green_checks:
+    - ci-vitest
+    - lint
+    - typecheck
+    - e2e-cli
+
+risk_register:
+  - id: behavior-drift
+    mitigation: "Snapshot + compare after each phase; gate merges on diff."
+  - id: hidden-globals
+    mitigation: "Search for module-level state; move into constructors; add tests."
+  - id: install-flakiness
+    mitigation: "Auto-run `yarn install` on detection; cache in CI."
+  - id: test-brittleness
+    mitigation: "Favor observable effects; avoid over-mocking; use fixtures."
+
+rollback_plan:
+  - "Revert to last green commit on default branch."
+  - "Restore behavior snapshots from artifacts."
+  - "Disable new coordinator behind feature flag if needed."
+
+metrics:
+  - name: coverage
+    target: ">=85%"
+    source: "coverage/lcov.info"
+  - name: e2e_duration_sec
+    target: "<=120"
+    source: "ci"
+
+commands:
+  ensure_install:
+    description: Run yarn install if errors indicate missing install.
+    script: |
+      set -e
+      if yarn -v >/dev/null 2>&1; then
+        yarn -s workspaces list >/dev/null 2>&1 || true
+      fi
+      if yarn run lint --fix >/dev/null 2>&1; then
+        exit 0
+      else
+        echo "Lint failed; attempting install…" 1>&2
+        yarn install --immutable || yarn install
+        yarn run lint --fix
+      fi
+  push_with_piped_message:
+    description: Example of multiline commit piped into pan push.
+    script: |
+      SUBJECT="refactor: migrate push flow to coordinator"
+      BODY=$'Introduce PushCoordinator and wire DI.\n\nPreserve external CLI behavior. Add contract tests.'
+      printf "%s\n\n%s\n" "$SUBJECT" "$BODY" | pan push --commit-message-from-stdin
+
+acceptance:
+  overall:
+    - "All phases completed with green gates."
+    - "CLI behavior unchanged vs snapshots, unless behind an explicit feature flag."
+    - "Docs updated (README.md, AGENT.md, docs/architecture.md)."
