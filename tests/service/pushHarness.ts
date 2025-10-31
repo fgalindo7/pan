@@ -200,6 +200,8 @@ vi.mock("../../src/lib/git.js", () => {
     }),
     worktreeClean: vi.fn(async () => pushMockState.git.worktreeClean),
     getBranchStatus: vi.fn(async () => pushMockState.git.branchStatus),
+    getShortStatus: vi.fn(async () => ""),
+    getCachedDiffStat: vi.fn(async () => ""),
   };
 });
 
@@ -209,6 +211,24 @@ vi.mock("../../src/lib/fix.js", () => {
       pushMockState.events.push("fix:smartBuildFix");
       return pushMockState.fix.result;
     }),
+  };
+});
+
+vi.mock("../../src/lib/workspaces.ts", () => {
+  return {
+    changedFiles: vi.fn(async () => ["package.json"]),
+  };
+});
+
+vi.mock("../../src/lib/commitMessageProvider.ts", () => {
+  return {
+    createCommitMessageProvider: vi.fn(() => ({
+      getCommitMessage: vi.fn(async (options: { defaultSubject: string; providedSubject?: string; providedBody?: string }) => ({
+        subject: options.providedSubject ?? options.defaultSubject,
+        body: options.providedBody,
+      })),
+    })),
+    suggestCommitMessage: vi.fn(async () => null),
   };
 });
 

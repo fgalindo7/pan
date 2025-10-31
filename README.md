@@ -191,13 +191,15 @@ Pan inspects `yarn workspaces list`, `git status`, and package.json scripts to d
 
 ### 📝 Commit message providers
 
-The push flow settles on one of three commit message sources:
+During `pan push`, Pan now collects branch metadata, the staged diff, and a log of remediation commands. If an assistant is available (`PAN_ASSISTANT_MODE=openai` with an API key or `PAN_ASSISTANT_MODE=local` with a shell command), that context seeds a suggested message which opens in `vi` for review. Without an assistant, the same template opens in `vi` so you can craft the commit manually.
 
-- **Static message** — set `PAN_COMMIT_MESSAGE_TEXT="subject\\n\\nbody"` to short-circuit the prompt/editor entirely (helpful for CI or scripted pushes).
-- **Editor flow** — Pan launches an editor when running on macOS or whenever `PAN_COMMIT_MESSAGE_EDITOR` or `PAN_COMMIT_MESSAGE_USE_EDITOR=1` is present. On macOS the default command is `open -W -a TextEdit <file>`; override it with any executable (for example a small Node script) via `PAN_COMMIT_MESSAGE_EDITOR`.
-- **Interactive prompt** — the fallback everywhere else, or when `PAN_NO_COMMIT_EDITOR=1` is set.
+You can still steer the flow:
 
-All modes accept `--commit-first-line` / `--commit-body` flags; provided values win over templates. The editor template mirrors Git’s `COMMIT_EDITMSG` format (subject line, blank line, body, then a short reminder block), and comment lines beginning with `#` are stripped before committing.
+- **Static message** — set `PAN_COMMIT_MESSAGE_TEXT="subject\n\nbody"` to skip the assistant/editor entirely (useful for CI or scripted pushes).
+- **Custom editor** — provide `PAN_COMMIT_MESSAGE_EDITOR` (for example `code --wait`) or `PAN_COMMIT_MESSAGE_USE_EDITOR=1` to launch something other than `vi`. On Windows Pan falls back to `notepad` by default.
+- **Prompt only** — export `PAN_NO_COMMIT_EDITOR=1` to skip the editor and answer an inline prompt instead.
+
+All modes honour `--commit-first-line` / `--commit-body`; provided values override both assistant suggestions and templates. The editor file mirrors Git’s `COMMIT_EDITMSG` layout (subject, blank line, body) followed by comment-prefixed context (changed files, diffstat, automated steps). Comment lines beginning with `#` are stripped before committing.
 
 ### Toolkit aliases
 

@@ -1,11 +1,13 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runCommand, addCommandRecorder, summarizeSuccessfulCommands, type CommandRecord } from "./run.js";
-import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit, pushSetUpstream, worktreeClean, getBranchStatus } from "./git.js";
+import { currentBranch, rebaseOntoOriginDefault, createBranch, stageAll, commit, pushSetUpstream, worktreeClean, getBranchStatus, getShortStatus, getCachedDiffStat } from "./git.js";
 import { userName, validFeatureBranch, sanitizeSegment, ALLOWED_PREFIX } from "./policy.js";
 import { smartBuildFix } from "./fix.js";
 import { runPrepushChecks, dirtyIndexCheck, typeCheck, lintFix } from "./checks.js";
-import { createCommitMessageProvider } from "./commitMessageProvider.js";
+import { createCommitMessageProvider, suggestCommitMessage } from "./commitMessageProvider.js";
+import { changedFiles } from "./workspaces.js";
+import { PushContext, type CommitMessageContext } from "../domain/PushContext.js";
 
 export interface PushOptions {
   branchPrefix?: string;
@@ -182,11 +184,43 @@ export async function pushFlow(options: NormalizedPushOptions = {}) {
         console.log("[pan] Using provided commit body.");
       }
 
+      const statusText = await getShortStatus();
+      const diffStat = await getCachedDiffStat();
+      const files = await changedFiles();
+      const summary = summarizeSuccessfulCommands(commandLog);
+
+      const pushContext = new PushContext({
+        branch: featureBranch,
+        author: user,
+        changedFiles: files,
+        statusText,
+        diffStat,
+        commandSummary: summary,
+      });
+
+      const commitContext: CommitMessageContext = pushContext.toCommitMessageContext();
+
+      let assistantSuggestion: { subject: string; body?: string } | null = null;
+      try {
+        assistantSuggestion = await suggestCommitMessage(commitContext);
+      } catch (error: any) {
+        console.log(`[pan] Assistant suggestion unavailable (${error?.message || "error"}). Falling back to manual entry.`);
+      }
+
+      if (assistantSuggestion) {
+        console.log("[pan] Assistant suggested a commit message. Review and edit as needed.");
+      } else {
+        console.log("[pan] Assistant could not suggest a commit message; opening editor for manual entry.");
+      }
+
       const commitProvider = createCommitMessageProvider();
       const { subject, body } = await commitProvider.getCommitMessage({
         defaultSubject: defMsg,
         providedSubject,
         providedBody,
+        suggestedSubject: assistantSuggestion?.subject,
+        suggestedBody: assistantSuggestion?.body,
+        context: commitContext,
       });
 
       const c = await commit(subject, body);

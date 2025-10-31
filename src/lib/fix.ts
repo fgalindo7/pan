@@ -6,7 +6,9 @@ import { run, addCommandRecorder, type CommandRecord } from "./run.js";
 import { consultChatGPT, logContextFromFile } from "./chatgpt.js";
 import { resolveCommand, type CommandInstance } from "./commands.js";
 import { resolveOriginDefaultRef } from "./git.js";
-import { changedWorkspaces, findScriptsByKeywords, hasScript, listWorkspaces, workspaceScriptCommand, WorkspaceInfo } from "./workspaces.js";
+import { changedWorkspaces, findScriptsByKeywords, hasScript, listWorkspaces, workspaceScriptCommand } from "./workspaces.js";
+import { Workspace } from "../domain/Workspace.js";
+import { RemediationOutcome, type BuildFailure, type CommandLogEntry } from "../domain/RemediationStrategy.js";
 
 const dockerRemediationCmd = process.env.PAN_DOCKER_DEV_CMD?.trim();
 const buildScriptPreference = ["build:ci", "build", "compile", "prepare"];
@@ -14,9 +16,50 @@ const remediationKeywordDefaults = ["fix", "clean", "prepare", "postinstall"];
 
 type RunResult = Awaited<ReturnType<typeof run>>;
 
-interface BuildFailure {
-  workspace: WorkspaceInfo | null;
-  result: RunResult;
+function toCommandLogEntries(records: CommandRecord[]): CommandLogEntry[] {
+  return records.map(record => ({
+    command: record.command,
+    label: record.label,
+    ok: record.ok,
+    exitCode: record.exitCode,
+    durationMs: record.durationMs,
+    timestamp: record.timestamp,
+  }));
+}
+
+function toBuildFailure(workspace: Workspace | null, result: RunResult): BuildFailure {
+  const code = result.ok ? 0 : result.code ?? 1;
+  return {
+    workspace,
+    result: {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      logFile: result.logFile,
+      code,
+    },
+  };
+}
+
+function createOutcome(params: {
+  ok: boolean;
+  summary: string;
+  steps: string[];
+  failures: BuildFailure[];
+  attempts: number;
+  consulted: boolean;
+  blockedMessage?: string;
+  commandRecords: CommandRecord[];
+}): RemediationOutcome {
+  return new RemediationOutcome({
+    ok: params.ok,
+    summary: params.summary,
+    steps: params.steps,
+    failures: params.failures,
+    attempts: params.attempts,
+    blockedMessage: params.blockedMessage,
+    consulted: params.consulted,
+    commands: toCommandLogEntries(params.commandRecords),
+  });
 }
 
 interface SmartFixOptions {
@@ -25,16 +68,7 @@ interface SmartFixOptions {
   label?: string;
 }
 
-export interface SmartBuildFixResult {
-  ok: boolean;
-  summary: string;
-  steps: string[];
-  failures: BuildFailure[];
-  attempts: number;
-  blockedMessage?: string;
-  consulted: boolean;
-  commands: CommandRecord[];
-}
+export type SmartBuildFixResult = RemediationOutcome;
 
 export async function smartBuildFix(options: SmartFixOptions = {}): Promise<SmartBuildFixResult> {
   const { skipConsult = false, interactive = true } = options;
@@ -44,29 +78,28 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
   const commands: CommandRecord[] = [];
   const removeRecorder = addCommandRecorder(entry => commands.push(entry));
   try {
-
-  const allWorkspaces = await listWorkspaces();
-  const targets = await changedWorkspaces();
-  const rootWorkspace = allWorkspaces.find(ws => ws.isRoot) || null;
+    const allWorkspaces = await listWorkspaces();
+    const targets = await changedWorkspaces();
+    const rootWorkspace = allWorkspaces.find(ws => ws.isRoot) || null;
 
     const priority = await attemptPriorityRemediation(rootWorkspace);
     if (priority.status === "ok") {
       steps.push("Priority remediation (git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc) completed successfully.");
-      return {
+      return createOutcome({
         ok: true,
         summary: "Priority remediation finished cleanly; no further build work was required.",
         steps,
         failures: [],
         attempts: totalRuns,
         consulted,
-        commands,
-      };
+        commandRecords: commands,
+      });
     }
 
     if (priority.status === "blocked") {
       const summary = priority.message;
       steps.push(`Priority remediation blocked: ${priority.message}`);
-      return {
+      return createOutcome({
         ok: false,
         summary,
         steps,
@@ -74,75 +107,107 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
         attempts: totalRuns,
         blockedMessage: priority.message,
         consulted,
-        commands,
-      };
+        commandRecords: commands,
+      });
     }
-  const continuationReason = priority.reason;
-  steps.push(continuationReason
-    ? `Priority remediation could not complete (${continuationReason}); continuing with targeted builds.`
-    : "Priority remediation completed; continuing with targeted builds.");
+    const continuationReason = priority.reason;
+    steps.push(continuationReason
+      ? `Priority remediation could not complete (${continuationReason}); continuing with targeted builds.`
+      : "Priority remediation completed; continuing with targeted builds.");
 
-  const first = await runBuildSequence(targets);
-  totalRuns += first.ran;
-  steps.push(describeRun("Initial build pass", first, targets));
-  if (first.ok) {
-    const summary = buildSuccessSummary("Initial build pass", targets, totalRuns);
-    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
-  }
+    const first = await runBuildSequence(targets);
+    totalRuns += first.ran;
+    steps.push(describeRun("Initial build pass", first, targets));
+    if (first.ok) {
+      const summary = buildSuccessSummary("Initial build pass", targets, totalRuns);
+      return createOutcome({
+        ok: true,
+        summary,
+        steps,
+        failures: [],
+        attempts: totalRuns,
+        consulted,
+        commandRecords: commands,
+      });
+    }
 
-  const combinedLog = failureBlob(first.failures);
-  await runRemediations(combinedLog, { targets, allWorkspaces, failures: first.failures });
-  steps.push("Executed remediation scripts based on failure output.");
+    const combinedLog = failureBlob(first.failures);
+    await runRemediations(combinedLog, { targets, allWorkspaces, failures: first.failures });
+    steps.push("Executed remediation scripts based on failure output.");
 
-  const second = await runBuildSequence(targets);
-  totalRuns += second.ran;
-  steps.push(describeRun("Post-remediation build pass", second, targets));
-  if (second.ok) {
-    const summary = buildSuccessSummary("Post-remediation build pass", targets, totalRuns);
-    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
-  }
+    const second = await runBuildSequence(targets);
+    totalRuns += second.ran;
+    steps.push(describeRun("Post-remediation build pass", second, targets));
+    if (second.ok) {
+      const summary = buildSuccessSummary("Post-remediation build pass", targets, totalRuns);
+      return createOutcome({
+        ok: true,
+        summary,
+        steps,
+        failures: [],
+        attempts: totalRuns,
+        consulted,
+        commandRecords: commands,
+      });
+    }
 
-  const install = resolveCommand("yi");
-  await run(install.command, install.label);
-  steps.push("Ran yarn install to refresh dependencies.");
+    const install = resolveCommand("yi");
+    await run(install.command, install.label);
+    steps.push("Ran yarn install to refresh dependencies.");
 
-  const third = await runBuildSequence(targets);
-  totalRuns += third.ran;
-  steps.push(describeRun("Post-install build pass", third, targets));
-  if (third.ok) {
-    const summary = buildSuccessSummary("Post-install build pass", targets, totalRuns);
-    return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
-  }
+    const third = await runBuildSequence(targets);
+    totalRuns += third.ran;
+    steps.push(describeRun("Post-install build pass", third, targets));
+    if (third.ok) {
+      const summary = buildSuccessSummary("Post-install build pass", targets, totalRuns);
+      return createOutcome({
+        ok: true,
+        summary,
+        steps,
+        failures: [],
+        attempts: totalRuns,
+        consulted,
+        commandRecords: commands,
+      });
+    }
 
-  let postFfyc: Awaited<ReturnType<typeof runBuildSequence>> | null = null;
-  if (interactive) {
-    const shouldRunFfyc = await confirmFfyc();
-    if (shouldRunFfyc) {
-  const ffyc = resolveCommand("ffyc");
-  const ffycResult = await run(ffyc.command, ffyc.label);
-      if (ffycResult.ok) {
-        steps.push("Ran ffyc deep clean.");
-        postFfyc = await runBuildSequence(targets);
-        totalRuns += postFfyc.ran;
-        steps.push(describeRun("Post-ffyc build pass", postFfyc, targets));
-        if (postFfyc.ok) {
-          const summary = buildSuccessSummary("Post-ffyc build pass", targets, totalRuns);
-          return { ok: true, summary, steps, failures: [], attempts: totalRuns, consulted, commands };
+    let postFfyc: Awaited<ReturnType<typeof runBuildSequence>> | null = null;
+    if (interactive) {
+      const shouldRunFfyc = await confirmFfyc();
+      if (shouldRunFfyc) {
+        const ffyc = resolveCommand("ffyc");
+        const ffycResult = await run(ffyc.command, ffyc.label);
+        if (ffycResult.ok) {
+          steps.push("Ran ffyc deep clean.");
+          postFfyc = await runBuildSequence(targets);
+          totalRuns += postFfyc.ran;
+          steps.push(describeRun("Post-ffyc build pass", postFfyc, targets));
+          if (postFfyc.ok) {
+            const summary = buildSuccessSummary("Post-ffyc build pass", targets, totalRuns);
+            return createOutcome({
+              ok: true,
+              summary,
+              steps,
+              failures: [],
+              attempts: totalRuns,
+              consulted,
+              commandRecords: commands,
+            });
+          }
+        } else {
+          steps.push("ffyc deep clean failed; continuing without it.");
         }
       } else {
-        steps.push("ffyc deep clean failed; continuing without it.");
+        steps.push("Skipped ffyc deep clean (user declined).");
       }
     } else {
-      steps.push("Skipped ffyc deep clean (user declined).");
+      steps.push("Skipped ffyc deep clean (non-interactive mode).");
     }
-  } else {
-    steps.push("Skipped ffyc deep clean (non-interactive mode).");
-  }
 
-  const latestRun = postFfyc ?? third;
-  const latestFailures = latestRun.failures.length
-    ? latestRun.failures
-    : (second.failures.length ? second.failures : first.failures);
+    const latestRun = postFfyc ?? third;
+    const latestFailures = latestRun.failures.length
+      ? latestRun.failures
+      : (second.failures.length ? second.failures : first.failures);
 
   const workspaceList = formatWorkspaceList(targets);
   const failureNames = latestFailures.map(failureLabel).join(", ") || workspaceList;
@@ -152,27 +217,27 @@ export async function smartBuildFix(options: SmartFixOptions = {}): Promise<Smar
     "Check the .repo-doctor logs above for details.",
   ].join(" ");
 
-  if (!skipConsult) {
-    await consultChatGPT({
-      summary,
-      question: "What additional build or remediation commands should Pan try next to restore a passing build?",
-      logs: latestFailures.map(f => {
-        const label = failureLabel(f);
-        return logContextFromFile(label, f.result.logFile);
-      }),
-    });
-    consulted = true;
-  }
+    if (!skipConsult) {
+      await consultChatGPT({
+        summary,
+        question: "What additional build or remediation commands should Pan try next to restore a passing build?",
+        logs: latestFailures.map(f => {
+          const label = failureLabel(f);
+          return logContextFromFile(label, f.result.logFile);
+        }),
+      });
+      consulted = true;
+    }
 
-  return {
-    ok: false,
-    summary,
-    steps,
-    failures: latestFailures,
-    attempts: totalRuns,
-    consulted,
-    commands,
-  };
+    return createOutcome({
+      ok: false,
+      summary,
+      steps,
+      failures: latestFailures,
+      attempts: totalRuns,
+      consulted,
+      commandRecords: commands,
+    });
   } finally {
     removeRecorder();
   }
@@ -183,7 +248,7 @@ type PriorityOutcome =
   | { status: "continue"; reason?: string }
   | { status: "blocked"; message: string };
 
-async function attemptPriorityRemediation(root: WorkspaceInfo | null): Promise<PriorityOutcome> {
+async function attemptPriorityRemediation(root: Workspace | null): Promise<PriorityOutcome> {
   console.log("[pan] Priority remediation: git fetch → git rebase origin/master → ycc → yi → yb → yl → ytc");
 
   const fetch = resolveCommand("gfo");
@@ -214,7 +279,7 @@ async function attemptPriorityRemediation(root: WorkspaceInfo | null): Promise<P
   return { status: "ok" };
 }
 
-function priorityCommandSteps(root: WorkspaceInfo | null): CommandInstance[] {
+function priorityCommandSteps(root: Workspace | null): CommandInstance[] {
   const steps: CommandInstance[] = [
     resolveCommand("ycc"),
     resolveCommand("yi"),
@@ -240,7 +305,7 @@ function priorityCommandSteps(root: WorkspaceInfo | null): CommandInstance[] {
   return steps;
 }
 
-function scriptCommand(root: WorkspaceInfo | null, script: string) {
+function scriptCommand(root: Workspace | null, script: string) {
   if (!root) return "";
   if (!hasScript(root, script)) return "";
   return workspaceScriptCommand(root, script);
@@ -264,7 +329,7 @@ async function promptYesNo(question: string, defaultYes = false) {
   }
 }
 
-async function runBuildSequence(targets: WorkspaceInfo[]): Promise<{ ok: boolean; failures: BuildFailure[]; ran: number }> {
+async function runBuildSequence(targets: Workspace[]): Promise<{ ok: boolean; failures: BuildFailure[]; ran: number }> {
   const failures: BuildFailure[] = [];
   let ran = 0;
 
@@ -280,20 +345,23 @@ async function runBuildSequence(targets: WorkspaceInfo[]): Promise<{ ok: boolean
       label: `${ws.isRoot ? "root" : ws.name} ${script}`,
     });
     const res = await run(commandInstance.command, commandInstance.label);
-    if (!res.ok) failures.push({ workspace: ws, result: res });
+    if (!res.ok) failures.push(toBuildFailure(ws, res));
   }
 
   if (ran === 0) {
   const fallbackCommand = resolveCommand("yb", { label: "yarn build (fallback)" });
   const fallback = await run(fallbackCommand.command, fallbackCommand.label);
-    if (!fallback.ok) return { ok: false, failures: [{ workspace: targets.find(w => w.isRoot) || null, result: fallback }], ran: 1 };
+    if (!fallback.ok) {
+      const workspace = targets.find(w => w.isRoot) || null;
+      return { ok: false, failures: [toBuildFailure(workspace, fallback)], ran: 1 };
+    }
     return { ok: true, failures: [], ran: 1 };
   }
 
   return { ok: failures.length === 0, failures, ran };
 }
 
-async function runRemediations(blob: string, ctx: { targets: WorkspaceInfo[]; allWorkspaces: WorkspaceInfo[]; failures: BuildFailure[] }) {
+async function runRemediations(blob: string, ctx: { targets: Workspace[]; allWorkspaces: Workspace[]; failures: BuildFailure[] }) {
   if (!blob.trim()) return;
   const lower = blob.toLowerCase();
   const executed = new Set<string>();
@@ -345,7 +413,7 @@ async function runRemediations(blob: string, ctx: { targets: WorkspaceInfo[]; al
   }
 }
 
-function selectBuildScript(ws: WorkspaceInfo) {
+function selectBuildScript(ws: Workspace) {
   for (const candidate of buildScriptPreference) {
     if (hasScript(ws, candidate)) return candidate;
   }
@@ -357,7 +425,7 @@ function failureBlob(failures: BuildFailure[]) {
   return failures.map(f => `${f.result.stdout}\n${f.result.stderr}`).join("\n");
 }
 
-function describeRun(label: string, result: { ok: boolean; failures: BuildFailure[] }, targets: WorkspaceInfo[]) {
+function describeRun(label: string, result: { ok: boolean; failures: BuildFailure[] }, targets: Workspace[]) {
   if (result.ok) {
     return `${label} succeeded for ${formatWorkspaceList(targets)}.`;
   }
@@ -365,12 +433,12 @@ function describeRun(label: string, result: { ok: boolean; failures: BuildFailur
   return `${label} failed for ${failures}.`;
 }
 
-function buildSuccessSummary(phase: string, targets: WorkspaceInfo[], runCount: number) {
+function buildSuccessSummary(phase: string, targets: Workspace[], runCount: number) {
   const workspaceList = formatWorkspaceList(targets);
   return `${phase} succeeded after ${runCount} targeted run${runCount === 1 ? "" : "s"} covering ${workspaceList}.`;
 }
 
-function formatWorkspaceList(targets: WorkspaceInfo[]) {
+function formatWorkspaceList(targets: Workspace[]) {
   const names = targets.length ? targets.map(ws => ws.isRoot ? "root workspace" : ws.name) : ["root workspace"];
   return humanJoin(Array.from(new Set(names)));
 }
@@ -537,8 +605,8 @@ function parseBranchStatus(output: string): BranchStatusInfo {
   return info;
 }
 
-function collectScripts(targets: WorkspaceInfo[], keywords: string[], all: WorkspaceInfo[]) {
-  const scripts: { workspace: WorkspaceInfo; script: string }[] = [];
+function collectScripts(targets: Workspace[], keywords: string[], all: Workspace[]) {
+  const scripts: { workspace: Workspace; script: string }[] = [];
   const checkList = [...targets, ...all.filter(ws => ws.isRoot)];
   for (const ws of checkList) {
     const matched = findScriptsByKeywords(ws, keywords);
